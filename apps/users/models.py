@@ -21,6 +21,8 @@ class UserGroup(models.Model):
         help_text="Display name for the role"
     )
     description = models.TextField(blank=True)
+    # Stored permissions for this user group as a list of permission codenames
+    permissions = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

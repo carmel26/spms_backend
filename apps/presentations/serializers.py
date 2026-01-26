@@ -8,7 +8,7 @@ from apps.presentations.models import (
 )
 from apps.schools.models import PresentationType
 from apps.users.models import CustomUser, StudentProfile
-from apps.notifications.utils import send_presentation_submitted_notification
+from apps.notifications.utils import send_presentation_submitted_notification, send_supervisor_assignment_notification
 
 
 class BasicUserSerializer(serializers.ModelSerializer):
@@ -166,6 +166,19 @@ class PresentationRequestSerializer(serializers.ModelSerializer):
         instance = super().create(validated_data)
         if supervisors:
             instance.supervisors.set(supervisors)
+            # Notify newly attached supervisors
+            try:
+                request = self.context.get('request')
+                assigned_by = request.user if request else None
+                from apps.users.models import CustomUser
+                for sup in supervisors:
+                    try:
+                        user = CustomUser.objects.get(id=sup.id) if hasattr(sup, 'id') else sup
+                        send_supervisor_assignment_notification(user, instance, assigned_by=assigned_by)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         if examiners:
             instance.proposed_examiners.set(examiners)
         
@@ -181,7 +194,23 @@ class PresentationRequestSerializer(serializers.ModelSerializer):
         instance = super().update(instance, validated_data)
 
         if supervisors is not None:
+            # Determine newly added supervisors and notify them
+            previous_ids = set(instance.supervisors.values_list('id', flat=True))
+            new_ids = set([s.id if hasattr(s, 'id') else int(s) for s in supervisors]) - previous_ids
             instance.supervisors.set(supervisors)
+
+            try:
+                request = self.context.get('request')
+                assigned_by = request.user if request else None
+                from apps.users.models import CustomUser
+                for sup_id in new_ids:
+                    try:
+                        user = CustomUser.objects.get(id=sup_id)
+                        send_supervisor_assignment_notification(user, instance, assigned_by=assigned_by)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         if examiners is not None:
             instance.proposed_examiners.set(examiners)
         return instance

@@ -234,3 +234,51 @@ def send_presentation_completed_notification(presentation_request, coordinator):
     notifications.append(coordinator_notification)
     
     return notifications
+
+
+def send_supervisor_assignment_notification(supervisor, presentation_request, assigned_by=None):
+    """
+    Send notification (and email) to a supervisor when they are attached/assigned
+    to a presentation request.
+
+    Args:
+        supervisor: CustomUser instance (supervisor)
+        presentation_request: PresentationRequest instance
+        assigned_by: CustomUser who assigned/attached the supervisor (optional)
+
+    Returns:
+        Notification object
+    """
+    title = 'New Supervisor Assignment'
+    message = f'You have been assigned as a supervisor for the presentation: "{presentation_request.research_title}" by {presentation_request.student.get_full_name()}.'
+
+    # Create in-app notification if recipient has an account
+    try:
+        notification = Notification.objects.create(
+            recipient=supervisor,
+            title=title,
+            message=message,
+            notification_type='supervisor_assignment',
+            presentation=presentation_request,
+            related_user=assigned_by
+        )
+    except Exception:
+        notification = None
+
+    # Send email (best-effort)
+    try:
+        from django.core.mail import send_mail
+        from django.conf import settings
+
+        subject = title
+        body = f"{message}\n\nPlease log in to the system to view the assignment and respond if required."
+        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
+        to_emails = [supervisor.email] if supervisor.email else []
+
+        if to_emails:
+            send_mail(subject, body, from_email, to_emails, fail_silently=True)
+    except Exception:
+        # don't break caller
+        pass
+
+    return notification

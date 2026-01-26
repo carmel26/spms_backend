@@ -126,7 +126,7 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
         
         # For students, return full form data
         if not user.is_student():
-            return Response({'detail': 'Only students and coordinators can access this endpoint.'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'detail': 'Only students and coordinators can access this information.'}, status=status.HTTP_403_FORBIDDEN)
 
         profile = StudentProfile.objects.filter(user=user).first()
         if not profile:
