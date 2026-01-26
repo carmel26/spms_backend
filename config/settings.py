@@ -12,7 +12,7 @@ SECRET_KEY = config('SECRET_KEY', default='your-secret-key-change-in-production'
 
 DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,172.20.10.11,10.10.14.94', cast=lambda v: [s.strip() for s in v.split(',')])
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,172.20.10.11,spmstest.netlify.app', cast=lambda v: [s.strip() for s in v.split(',')])
 
 # Frontend URL for password reset emails
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:4200')
@@ -44,10 +44,10 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'config.middleware.CustomCorsMiddleware',  # Custom CORS middleware for OPTIONS requests
-    'corsheaders.middleware.CorsMiddleware',
+    # 'config.middleware.CustomCorsMiddleware',  # Custom CORS middleware for OPTIONS requests
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -173,6 +173,8 @@ CORS_ALLOWED_ORIGINS = [
     'http://localhost:8081',
     'http://127.0.0.1:8080',
     'http://127.0.0.1:8081',
+    'https://spmstest.netlify.app',
+    'https://upendo.pythonanywhere.com',
 ]
 
 # For development, allow any localhost origin
@@ -187,7 +189,9 @@ if DEBUG:
         'http://10.10.14.94:4200',
         'http://10.10.14.94:4201',
         'http://10.10.14.94:8080',
-        'http://10.10.14.94:5000'
+        'http://10.10.14.94:5000',
+        'https://upendo.pythonanywhere.com',
+        'https://spmstest.netlify.app',
     ]
 
 # Allow credentials in CORS requests
@@ -210,6 +214,11 @@ CORS_ALLOW_HEADERS = [
 CORS_EXPOSE_HEADERS = [
     'content-type',
     'x-csrftoken',
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://spmstest.netlify.app',
+    'https://upendo.pythonanywhere.com'
 ]
 
 # Allow OPTIONS requests without authentication
