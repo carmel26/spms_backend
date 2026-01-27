@@ -189,6 +189,14 @@ class UserViewSet(viewsets.ModelViewSet):
             
             # Check if user must change password
             must_change_password = not user.password_changed
+
+            # Update last login date for analytics and dashboard
+            try:
+                user.last_login_date = timezone.now()
+                user.save(update_fields=['last_login_date'])
+            except Exception:
+                # don't block login if saving last_login_date fails
+                pass
             
             return Response({
                 'message': 'Login successful',
