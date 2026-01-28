@@ -12,6 +12,7 @@ from .serializers import (
     PasswordChangeSerializer, UserGroupSerializer, SystemSettingsSerializer, AuditLogSerializer
 )
 from apps.presentations.models import PresentationRequest, ExaminerAssignment
+import logging
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -123,88 +124,95 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def login(self, request):
         """Login endpoint - accepts email or username"""
-        email_or_username = request.data.get('email') or request.data.get('username')
-        password = request.data.get('password')
-        
-        if not email_or_username or not password:
-            return Response({'error': 'Email and password required'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Try to authenticate with email first, then with username
-        user = None
         try:
-            # Try email first
-            user_by_email = CustomUser.objects.get(email=email_or_username)
-            user = authenticate(username=user_by_email.username, password=password)
-        except CustomUser.DoesNotExist:
-            # Try username if email doesn't exist
-            user = authenticate(username=email_or_username, password=password)
-        
-        if user:
-            # Block deleted accounts
-            if user.is_deleted:
-                return Response(
-                    {'detail': 'This account has been deleted. Please contact the administrator.'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-            # Block inactive accounts
-            if not user.is_active:
-                return Response(
-                    {'detail': 'Your account is inactive. Please contact the admission office.'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
+            email_or_username = request.data.get('email') or request.data.get('username')
+            password = request.data.get('password')
 
-            student_profile = None
+            if not email_or_username or not password:
+                return Response({'error': 'Email and password required'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Check if student is approved and admitted/active
-            if user.is_student():
-                if not user.is_approved:
+            # Try to authenticate with email first, then with username
+            user = None
+            try:
+                # Try email first
+                user_by_email = CustomUser.objects.get(email=email_or_username)
+                user = authenticate(username=user_by_email.username, password=password)
+            except CustomUser.DoesNotExist:
+                # Try username if email doesn't exist
+                user = authenticate(username=email_or_username, password=password)
+
+            if user:
+                # Block deleted accounts
+                if user.is_deleted:
                     return Response(
-                        {'detail': 'Your account is pending approval. Please contact the admission office.'},
+                        {'detail': 'This account has been deleted. Please contact the administrator.'},
                         status=status.HTTP_403_FORBIDDEN
                     )
 
-                student_profile = StudentProfile.objects.filter(user=user).first()
-                if student_profile:
-                    if not student_profile.is_admitted:
+                # Block inactive accounts
+                if not user.is_active:
+                    return Response(
+                        {'detail': 'Your account is inactive. Please contact the admission office.'},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
+                student_profile = None
+
+                # Check if student is approved and admitted/active
+                if user.is_student():
+                    if not user.is_approved:
                         return Response(
-                            {'detail': 'Your account has not been admitted yet. Please contact the admission office.'},
+                            {'detail': 'Your account is pending approval. Please contact the admission office.'},
                             status=status.HTTP_403_FORBIDDEN
                         )
-                    if not student_profile.is_active_student:
-                        return Response(
-                            {'detail': 'Your student profile is inactive. Please contact the admission office.'},
-                            status=status.HTTP_403_FORBIDDEN
-                        )
-                # If no profile exists but the user is approved/active, allow login (avoid hard block)
 
-            token, created = Token.objects.get_or_create(user=user)
-            user_data = CustomUserSerializer(user).data
+                    student_profile = StudentProfile.objects.filter(user=user).first()
+                    if student_profile:
+                        if not student_profile.is_admitted:
+                            return Response(
+                                {'detail': 'Your account has not been admitted yet. Please contact the admission office.'},
+                                status=status.HTTP_403_FORBIDDEN
+                            )
+                        if not student_profile.is_active_student:
+                            return Response(
+                                {'detail': 'Your student profile is inactive. Please contact the admission office.'},
+                                status=status.HTTP_403_FORBIDDEN
+                            )
+                    # If no profile exists but the user is approved/active, allow login (avoid hard block)
 
-            # Add student profile admission status if student
-            if user.is_student():
-                user_data['student_profile'] = (
-                    StudentProfileSerializer(student_profile).data if student_profile else None
-                )
-            
-            # Check if user must change password
-            must_change_password = not user.password_changed
+                token, created = Token.objects.get_or_create(user=user)
+                user_data = CustomUserSerializer(user).data
 
-            # Update last login date for analytics and dashboard
-            try:
-                user.last_login_date = timezone.now()
-                user.save(update_fields=['last_login_date'])
-            except Exception:
-                # don't block login if saving last_login_date fails
-                pass
-            
-            return Response({
-                'message': 'Login successful',
-                'token': token.key,
-                'user': user_data,
-                'must_change_password': must_change_password
-            })
-        return Response({'detail': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+                # Add student profile admission status if student
+                if user.is_student():
+                    user_data['student_profile'] = (
+                        StudentProfileSerializer(student_profile).data if student_profile else None
+                    )
+
+                # Check if user must change password
+                must_change_password = not user.password_changed
+
+                # Update last login date for analytics and dashboard
+                try:
+                    user.last_login_date = timezone.now()
+                    user.save(update_fields=['last_login_date'])
+                except Exception:
+                    # don't block login if saving last_login_date fails
+                    pass
+
+                return Response({
+                    'message': 'Login successful',
+                    'token': token.key,
+                    'user': user_data,
+                    'must_change_password': must_change_password
+                })
+
+            return Response({'detail': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+        except Exception as exc:
+            logger = logging.getLogger(__name__)
+            logger.exception('Unhandled exception during login')
+            # Return a minimal, non-sensitive error to the client
+            return Response({'detail': 'An internal error occurred while processing login. Please try again later.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['post'])
     def logout(self, request):
