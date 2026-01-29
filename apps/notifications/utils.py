@@ -120,14 +120,73 @@ def send_examiner_assignment_notification(examiner, presentation_request, assign
     title = 'New Examiner Assignment'
     message = f'You have been assigned as an examiner for the presentation: "{presentation_request.research_title}" by {presentation_request.student.get_full_name()}. Please review and respond to this assignment.'
     
-    return Notification.objects.create(
-        recipient=examiner,
-        title=title,
-        message=message,
-        notification_type='examiner_assignment',
-        presentation=presentation_request,
-        related_user=assigned_by
-    )
+    # Create in-app notification
+    try:
+        notification = Notification.objects.create(
+            recipient=examiner,
+            title=title,
+            message=message,
+            notification_type='examiner_assignment',
+            presentation=presentation_request,
+            related_user=assigned_by
+        )
+    except Exception:
+        notification = None
+
+    # Send email using HTML template (best-effort). Log exceptions so failures are visible.
+    try:
+        import logging
+        from django.conf import settings
+        from django.template.loader import render_to_string
+        from django.core.mail import EmailMultiAlternatives
+
+        logger = logging.getLogger(__name__)
+
+        subject = title
+
+        # Prepare context for templates
+        context = {
+            'presentation': presentation_request,
+            'examiner': examiner,
+            'assigned_by': assigned_by,
+            'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200')
+        }
+
+        # Render text and HTML versions
+        try:
+            html_body = render_to_string('emails/examiner_assignment.html', context)
+        except Exception:
+            html_body = None
+
+        try:
+            text_body = render_to_string('emails/examiner_assignment.txt', context)
+        except Exception:
+            # Fallback plain text
+            body_lines = [message, '', 'Presentation details:']
+            body_lines.append(f"Title: {presentation_request.research_title}")
+            body_lines.append(f"Student: {presentation_request.student.get_full_name()}")
+            if getattr(presentation_request, 'proposed_date', None):
+                body_lines.append(f"Proposed date: {presentation_request.proposed_date}")
+            body_lines.append('')
+            body_lines.append('Please log in to the system to view the assignment and respond.')
+            text_body = '\n'.join(body_lines)
+
+        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
+        to_emails = [ex.email] if (ex := getattr(examiner, 'email', None)) else []
+
+        if to_emails:
+            msg = EmailMultiAlternatives(subject, text_body, from_email, to_emails)
+            if html_body:
+                msg.attach_alternative(html_body, 'text/html')
+            try:
+                msg.send(fail_silently=False)
+            except Exception as send_err:
+                logger.exception('Failed to send examiner assignment email: %s', send_err)
+    except Exception:
+        # Ensure notification creation does not break the flow
+        pass
+
+    return notification
 
 
 def send_examiner_response_notification(coordinator, presentation_request, examiner, status, decline_reason=None):
@@ -236,6 +295,182 @@ def send_presentation_completed_notification(presentation_request, coordinator):
     return notifications
 
 
+def send_presentation_time_reminder(presentation_request, minutes_before=15):
+    """
+    Send reminder emails and in-app notifications to relevant users
+    a specified number of minutes before the scheduled presentation.
+
+    Recipients and role-specific wording:
+      - Student (presenter)
+      - Assigned examiners
+      - Session moderator
+      - Supervisors
+      - Coordinator(s) (assignment.coordinator)
+
+    Args:
+        presentation_request: PresentationRequest instance
+        minutes_before: int minutes remaining (default 15)
+
+    Returns:
+        List of created Notification objects
+    """
+    import logging
+    from django.conf import settings
+    from django.template.loader import render_to_string
+    from django.core.mail import EmailMultiAlternatives
+
+    logger = logging.getLogger(__name__)
+    notifications = []
+
+    try:
+        role_entries = []
+
+        # Student
+        if getattr(presentation_request, 'student', None):
+            role_entries.append(('Presenter', presentation_request.student))
+
+        # Coordinator & session moderator from assignment
+        assignment = getattr(presentation_request, 'assignment', None)
+        if assignment:
+            if getattr(assignment, 'coordinator', None):
+                role_entries.append(('Coordinator', assignment.coordinator))
+            if getattr(assignment, 'session_moderator', None):
+                role_entries.append(('Session Moderator', assignment.session_moderator))
+
+            # Examiner assignments (ExaminerAssignment)
+            try:
+                for ea in getattr(assignment, 'examiner_assignments', []).all():
+                    if getattr(ea, 'examiner', None):
+                        role_entries.append(('Examiner', ea.examiner))
+            except Exception:
+                # assignment.examiner_assignments may be a queryset or empty
+                pass
+
+        # Supervisors (ManyToMany on PresentationRequest)
+        try:
+            for sup in getattr(presentation_request, 'supervisors', []).all():
+                role_entries.append(('Supervisor', sup))
+        except Exception:
+            pass
+
+        # Remove duplicates by user id
+        seen = set()
+        unique_entries = []
+        for role_label, user in role_entries:
+            if not user or not getattr(user, 'is_active', True):
+                continue
+            uid = getattr(user, 'id', None)
+            if uid in seen:
+                continue
+            seen.add(uid)
+            unique_entries.append((role_label, user))
+
+        # Prepare context common
+        from apps.notifications.models import ReminderLog
+
+        for role_label, user in unique_entries:
+            try:
+                title = f'Presentation Reminder — {minutes_before} minutes'
+                # role-specific message
+                message = f'Reminder: the presentation "{presentation_request.research_title}" is scheduled to start in {minutes_before} minutes.\nPlease be ready.'
+
+                # Create in-app notification
+                try:
+                    n = Notification.objects.create(
+                        recipient=user,
+                        title='Presentation Reminder',
+                        message=f'{role_label}: {message}',
+                        notification_type='presentation_reminder',
+                        presentation=presentation_request,
+                        related_user=None
+                    )
+                    notifications.append(n)
+                    try:
+                        ReminderLog.objects.create(
+                            recipient=user,
+                            presentation=presentation_request,
+                            minutes_before=minutes_before,
+                            channel='in_app',
+                            status='sent'
+                        )
+                    except Exception:
+                        # If logging fails, don't break flow
+                        pass
+                except Exception as notif_err:
+                    try:
+                        ReminderLog.objects.create(
+                            recipient=user,
+                            presentation=presentation_request,
+                            minutes_before=minutes_before,
+                            channel='in_app',
+                            status='failed',
+                            error=str(notif_err)
+                        )
+                    except Exception:
+                        pass
+
+                # Email
+                context = {
+                    'presentation': presentation_request,
+                    'recipient': user,
+                    'role_label': role_label,
+                    'minutes_before': minutes_before,
+                    'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200')
+                }
+
+                try:
+                    html_body = render_to_string('emails/presentation_reminder.html', context)
+                except Exception:
+                    html_body = None
+
+                try:
+                    text_body = render_to_string('emails/presentation_reminder.txt', context)
+                except Exception:
+                    text_body = message
+
+                from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
+                to_emails = [user.email] if getattr(user, 'email', None) else []
+
+                if to_emails:
+                    subj = f'[{role_label}] Presentation starts in {minutes_before} minutes'
+                    msg = EmailMultiAlternatives(subj, text_body, from_email, to_emails)
+                    if html_body:
+                        msg.attach_alternative(html_body, 'text/html')
+                    try:
+                        msg.send(fail_silently=False)
+                        try:
+                            ReminderLog.objects.create(
+                                recipient=user,
+                                presentation=presentation_request,
+                                minutes_before=minutes_before,
+                                channel='email',
+                                status='sent'
+                            )
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.exception('Failed to send presentation reminder to %s: %s', user.email, e)
+                        try:
+                            ReminderLog.objects.create(
+                                recipient=user,
+                                presentation=presentation_request,
+                                minutes_before=minutes_before,
+                                channel='email',
+                                status='failed',
+                                error=str(e)
+                            )
+                        except Exception:
+                            pass
+
+            except Exception as inner_e:
+                logger.exception('Error preparing reminder for user %s: %s', getattr(user, 'id', None), inner_e)
+
+    except Exception as e:
+        logger.exception('Failed to send presentation time reminders: %s', e)
+
+    return notifications
+
+
 def send_supervisor_assignment_notification(supervisor, presentation_request, assigned_by=None):
     """
     Send notification (and email) to a supervisor when they are attached/assigned
@@ -266,19 +501,118 @@ def send_supervisor_assignment_notification(supervisor, presentation_request, as
         notification = None
 
     # Send email (best-effort)
+    # Send email using HTML/text templates and log failures
     try:
-        from django.core.mail import send_mail
+        import logging
         from django.conf import settings
+        from django.template.loader import render_to_string
+        from django.core.mail import EmailMultiAlternatives
+
+        logger = logging.getLogger(__name__)
 
         subject = title
-        body = f"{message}\n\nPlease log in to the system to view the assignment and respond if required."
+        context = {
+            'presentation': presentation_request,
+            'recipient': supervisor,
+            'assigned_by': assigned_by,
+            'role_label': 'Supervisor',
+            'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200')
+        }
+
+        try:
+            html_body = render_to_string('emails/examiner_assignment.html', context)
+        except Exception:
+            html_body = None
+
+        try:
+            text_body = render_to_string('emails/examiner_assignment.txt', context)
+        except Exception:
+            text_body = f"{message}\n\nPlease log in to the system to view the assignment and respond if required."
+
         from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
-        to_emails = [supervisor.email] if supervisor.email else []
+        to_emails = [supervisor.email] if getattr(supervisor, 'email', None) else []
 
         if to_emails:
-            send_mail(subject, body, from_email, to_emails, fail_silently=True)
+            msg = EmailMultiAlternatives(subject, text_body, from_email, to_emails)
+            if html_body:
+                msg.attach_alternative(html_body, 'text/html')
+            try:
+                msg.send(fail_silently=False)
+            except Exception as send_err:
+                logger.exception('Failed to send supervisor assignment email: %s', send_err)
     except Exception:
-        # don't break caller
+        pass
+
+    return notification
+
+
+def send_session_moderator_assignment_notification(moderator, presentation_request, assigned_by=None):
+    """
+    Notify a session moderator when they are assigned to moderate a presentation.
+
+    Args:
+        moderator: CustomUser instance (moderator)
+        presentation_request: PresentationRequest instance
+        assigned_by: CustomUser who assigned the moderator (optional)
+
+    Returns:
+        Notification object or None
+    """
+    title = 'Assigned as Session Moderator'
+    message = f'You have been assigned as the session moderator for the presentation: "{presentation_request.research_title}" by {presentation_request.student.get_full_name()}.'
+
+    try:
+        notification = Notification.objects.create(
+            recipient=moderator,
+            title=title,
+            message=message,
+            notification_type='session_moderator_assignment',
+            presentation=presentation_request,
+            related_user=assigned_by
+        )
+    except Exception:
+        notification = None
+
+    # Send email (best-effort)
+    try:
+        import logging
+        from django.conf import settings
+        from django.template.loader import render_to_string
+        from django.core.mail import EmailMultiAlternatives
+
+        logger = logging.getLogger(__name__)
+
+        subject = title
+        context = {
+            'presentation': presentation_request,
+            'recipient': moderator,
+            'assigned_by': assigned_by,
+            'role_label': 'Session Moderator',
+            'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200')
+        }
+
+        try:
+            html_body = render_to_string('emails/examiner_assignment.html', context)
+        except Exception:
+            html_body = None
+
+        try:
+            text_body = render_to_string('emails/examiner_assignment.txt', context)
+        except Exception:
+            text_body = f"{message}\n\nPlease log in to the system to view the session details and the presentation request."
+
+        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
+        to_emails = [moderator.email] if getattr(moderator, 'email', None) else []
+
+        if to_emails:
+            msg = EmailMultiAlternatives(subject, text_body, from_email, to_emails)
+            if html_body:
+                msg.attach_alternative(html_body, 'text/html')
+            try:
+                msg.send(fail_silently=False)
+            except Exception as send_err:
+                logger.exception('Failed to send moderator assignment email: %s', send_err)
+    except Exception:
         pass
 
     return notification

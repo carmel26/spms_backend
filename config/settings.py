@@ -238,6 +238,24 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 
+# Celery beat schedule: run reminders every minute to pick up presentations
+from celery.schedules import schedule
+
+CELERY_BEAT_SCHEDULE = {
+    'send-presentation-reminders-every-minute': {
+        'task': 'apps.notifications.tasks.send_upcoming_reminders',
+        'schedule': 60.0,  # every 60 seconds
+        'args': (15,)
+    }
+}
+
+# Also run the same reminder sweep for 30-minute warnings (run every minute)
+CELERY_BEAT_SCHEDULE['send-presentation-reminders-30min'] = {
+    'task': 'apps.notifications.tasks.send_upcoming_reminders',
+    'schedule': 60.0,
+    'args': (30,)
+}
+
 # Blockchain Configuration
 BLOCKCHAIN_NETWORK = config('BLOCKCHAIN_NETWORK', default='http://127.0.0.1:8545')
 BLOCKCHAIN_CONTRACT_ADDRESS = config('BLOCKCHAIN_CONTRACT_ADDRESS', default='')

@@ -22,7 +22,13 @@ from apps.presentations.serializers import (
 )
 from apps.schools.models import PresentationType
 from apps.users.models import CustomUser, StudentProfile
-from apps.notifications.utils import send_examiner_assignment_notification, send_examiner_response_notification, send_presentation_completed_notification, send_presentation_submitted_notification
+from apps.notifications.utils import (
+    send_examiner_assignment_notification,
+    send_examiner_response_notification,
+    send_presentation_completed_notification,
+    send_presentation_submitted_notification,
+    send_session_moderator_assignment_notification,
+)
 
 
 class PresentationRequestViewSet(viewsets.ModelViewSet):
@@ -232,6 +238,17 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
         assignment.venue = venue or ''
         assignment.session_moderator = session_moderator
         assignment.save()
+
+        # Notify the session moderator (in-app + email) if one was assigned
+        if session_moderator:
+            try:
+                send_session_moderator_assignment_notification(
+                    moderator=session_moderator,
+                    presentation_request=presentation,
+                    assigned_by=user
+                )
+            except Exception as e:
+                print(f"Failed to notify session moderator {getattr(session_moderator, 'id', 'N/A')}: {e}")
         
         # Update scheduled_date and status based on whether date is provided
         if scheduled_date:

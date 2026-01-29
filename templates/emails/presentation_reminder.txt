@@ -1,0 +1,20 @@
+Presentation Reminder
+
+Hello {{ recipient.get_full_name }},
+
+This is a reminder for {{ role_label }}: the presentation "{{ presentation.research_title }}" by {{ presentation.student.get_full_name }} is scheduled to start in {{ minutes_before }} minutes.
+
+{% if presentation.schedule %}
+Venue: {{ presentation.schedule.venue }}
+Start time: {{ presentation.schedule.start_time }}
+{% else %}
+Proposed date: {{ presentation.proposed_date }}
+{% endif %}
+
+{% if presentation.meeting_link %}Meeting link: {{ presentation.meeting_link }}
+{% elif presentation.assignment and presentation.assignment.meeting_link %}Meeting link: {{ presentation.assignment.meeting_link }}
+{% endif %}
+
+Please be ready and ensure any materials are available.
+
+Open presentation: {{ frontend_url }}/presentations/{{ presentation.id }}

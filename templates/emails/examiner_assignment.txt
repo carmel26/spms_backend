@@ -1,0 +1,14 @@
+New Examiner Assignment
+
+Hello {{ examiner.get_full_name }},
+
+You have been assigned as an examiner for the following presentation:
+
+Title: {{ presentation.research_title }}
+Student: {{ presentation.student.get_full_name }}
+{% if presentation.proposed_date %}Proposed date: {{ presentation.proposed_date }}
+{% endif %}
+
+Please log in to the system to view the assignment and respond: {{ frontend_url }}/presentations/{{ presentation.id }}
+
+This message was sent by Secure Progress Management System.

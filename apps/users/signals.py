@@ -410,6 +410,21 @@ if PRESENTATION_MODELS_AVAILABLE:
                 changes=changes,
                 success=True
             )
+            # Notify the supervisor by creating an in-app notification and sending an email
+            try:
+                from apps.notifications.utils import send_supervisor_assignment_notification
+                try:
+                    send_supervisor_assignment_notification(
+                        supervisor=instance.supervisor,
+                        presentation_request=instance.assignment.presentation,
+                        assigned_by=getattr(instance, '_current_user', None)
+                    )
+                except Exception:
+                    # best-effort: do not fail the signal if notification fails
+                    pass
+            except Exception:
+                # If the notifications utils cannot be imported, ignore to avoid breaking save flow
+                pass
     
     
     @receiver(post_save, sender=PresentationAssignment)

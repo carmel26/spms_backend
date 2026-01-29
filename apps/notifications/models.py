@@ -107,3 +107,27 @@ class NotificationPreference(models.Model):
     
     def __str__(self):
         return f"Preferences for {self.user.username}"
+
+
+class ReminderLog(models.Model):
+    """Log of reminder attempts for presentations"""
+    recipient = models.ForeignKey(
+        'users.CustomUser', on_delete=models.CASCADE, related_name='reminder_logs'
+    )
+    presentation = models.ForeignKey(
+        'presentations.PresentationRequest', on_delete=models.CASCADE, related_name='reminder_logs'
+    )
+    minutes_before = models.IntegerField(default=15)
+    channel = models.CharField(max_length=32, choices=(('email', 'Email'), ('in_app', 'In App')),
+                               default='email')
+    status = models.CharField(max_length=32, choices=(('sent', 'Sent'), ('failed', 'Failed')),
+                              default='sent')
+    error = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'reminder_logs'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Reminder {self.presentation.id} -> {self.recipient.username} ({self.minutes_before}m) [{self.status}]"
