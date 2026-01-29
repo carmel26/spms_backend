@@ -1,6 +1,6 @@
 Presentation Reminder
 
-Hello {{ recipient.get_full_name }},
+Hello {% if honorific %}{{ honorific }} {% endif %}{{ recipient.get_full_name }},
 
 This is a reminder for {{ role_label }}: the presentation "{{ presentation.research_title }}" by {{ presentation.student.get_full_name }} is scheduled to start in {{ minutes_before }} minutes.
 

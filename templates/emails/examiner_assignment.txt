@@ -1,6 +1,6 @@
 New Examiner Assignment
 
-Hello {{ examiner.get_full_name }},
+Hello {% if honorific %}{{ honorific }} {% endif %}{{ examiner.get_full_name }},
 
 You have been assigned as an examiner for the following presentation:
 

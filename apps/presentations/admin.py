@@ -8,6 +8,8 @@ from .models import (
     PresentationAssessment,
     ExaminerChangeHistory
 )
+from apps.notifications.utils import send_presentation_time_reminder
+from django.contrib import messages
 
 
 @admin.register(PresentationRequest)
@@ -15,6 +17,28 @@ class PresentationRequestAdmin(admin.ModelAdmin):
     list_display = ['student', 'presentation_type', 'research_title', 'status', 'proposed_date', 'created_at']
     list_filter = ['status', 'presentation_type', 'created_at']
     search_fields = ['student__username', 'student__email', 'research_title']
+    actions = ['send_15_min_reminder', 'send_30_min_reminder']
+
+    def _send_reminder_for_queryset(self, request, queryset, minutes):
+        sent = 0
+        for pr in queryset:
+            try:
+                send_presentation_time_reminder(pr, minutes_before=minutes)
+                sent += 1
+            except Exception:
+                # continue to next
+                continue
+        self.message_user(request, f'Sent reminders for {sent} presentation(s) (minutes_before={minutes})', level=messages.SUCCESS)
+
+    def send_15_min_reminder(self, request, queryset):
+        """Admin action: send 15-minute reminders for selected presentations"""
+        self._send_reminder_for_queryset(request, queryset, 15)
+    send_15_min_reminder.short_description = 'Send 15-minute reminder for selected presentations'
+
+    def send_30_min_reminder(self, request, queryset):
+        """Admin action: send 30-minute reminders for selected presentations"""
+        self._send_reminder_for_queryset(request, queryset, 30)
+    send_30_min_reminder.short_description = 'Send 30-minute reminder for selected presentations'
 
 
 @admin.register(PresentationAssignment)

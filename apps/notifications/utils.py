@@ -4,6 +4,49 @@ Utility functions for notifications
 from apps.notifications.models import Notification
 
 
+def _get_honorific(user):
+    """Return a short honorific for a user (e.g. 'Dr.', 'Prof.', 'Mr/Ms').
+
+    Preference order:
+      - common title fields if present on the user object
+      - prefix in full name (e.g. 'Dr', 'Prof')
+      - fallback to 'Mr/Ms'
+    """
+    if not user:
+        return 'Mr/Ms'
+
+    # Common attribute names that may store a title
+    for attr in ('title_display', 'title', 'academic_title', 'honorific'):
+        val = getattr(user, attr, None)
+        if val:
+            # normalize
+            s = str(val).strip()
+            if s:
+                # ensure trailing dot for common academic titles
+                if s.lower().startswith('dr') and not s.endswith('.'):
+                    return 'Dr.'
+                if s.lower().startswith('prof') and not s.endswith('.'):
+                    return 'Prof.'
+                return s
+
+    # Try to detect prefix in full name
+    try:
+        full = user.get_full_name() if callable(getattr(user, 'get_full_name', None)) else ''
+    except Exception:
+        full = ''
+
+    if full:
+        for p in ('Dr.', 'Dr', 'Prof.', 'Prof', 'Professor'):
+            if full.startswith(p):
+                # normalize
+                if p.startswith('Dr'):
+                    return 'Dr.'
+                return 'Prof.'
+
+    # Fallback
+    return 'Mr/Ms'
+
+
 def create_notification_for_students(title, message, notification_type, **kwargs):
     """
     Create notifications only for users with student profile
@@ -149,7 +192,8 @@ def send_examiner_assignment_notification(examiner, presentation_request, assign
             'presentation': presentation_request,
             'examiner': examiner,
             'assigned_by': assigned_by,
-            'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200')
+            'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
+            'honorific': _get_honorific(examiner)
         }
 
         # Render text and HTML versions
@@ -415,7 +459,8 @@ def send_presentation_time_reminder(presentation_request, minutes_before=15):
                     'recipient': user,
                     'role_label': role_label,
                     'minutes_before': minutes_before,
-                    'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200')
+                    'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
+                        'honorific': _get_honorific(user),
                 }
 
                 try:
@@ -516,7 +561,8 @@ def send_supervisor_assignment_notification(supervisor, presentation_request, as
             'recipient': supervisor,
             'assigned_by': assigned_by,
             'role_label': 'Supervisor',
-            'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200')
+            'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
+            'honorific': _get_honorific(supervisor)
         }
 
         try:

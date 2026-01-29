@@ -2,6 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from django.utils import timezone
 import datetime
 from .models import Notification, NotificationPreference
@@ -15,6 +16,8 @@ from apps.presentations.models import (
     ExaminerAssignment,
     PresentationSchedule,
 )
+from django.shortcuts import get_object_or_404
+from .utils import send_presentation_time_reminder
 
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
@@ -167,4 +170,31 @@ class NotificationPreferenceViewSet(viewsets.ModelViewSet):
             return NotificationPreference.objects.none()
         
         return NotificationPreference.objects.filter(user=user)
+
+
+
+class SendReminderView(APIView):
+    """API endpoint for coordinators/admins to trigger a reminder for a presentation."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        presentation_id = request.data.get('presentation_id')
+        minutes = int(request.data.get('minutes', 15))
+
+        if not presentation_id:
+            return Response({'detail': 'presentation_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        presentation = get_object_or_404(PresentationRequest, id=presentation_id)
+
+        # Allow if user is staff or the assigned coordinator
+        user = request.user
+        is_coordinator = PresentationAssignment.objects.filter(presentation=presentation, coordinator=user).exists()
+        if not (user.is_staff or is_coordinator):
+            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            send_presentation_time_reminder(presentation, minutes_before=minutes)
+            return Response({'detail': f'Reminder invoked for presentation {presentation_id} (minutes_before={minutes})'})
+        except Exception as e:
+            return Response({'detail': 'Failed to invoke reminder', 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
