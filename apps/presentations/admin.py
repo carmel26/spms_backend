@@ -8,6 +8,7 @@ from .models import (
     PresentationAssessment,
     ExaminerChangeHistory
 )
+from .models import Form as PresentationForm
 from apps.notifications.utils import send_presentation_time_reminder
 from django.contrib import messages
 
@@ -87,3 +88,11 @@ class ExaminerChangeHistoryAdmin(admin.ModelAdmin):
     def get_new_count(self, obj):
         return obj.new_examiners.count()
     get_new_count.short_description = 'New Examiners'
+
+
+@admin.register(PresentationForm)
+class PresentationFormAdmin(admin.ModelAdmin):
+    list_display = ['id', 'name', 'form_role', 'presentation', 'created_by', 'created_at']
+    list_filter = ['form_role', 'created_at']
+    search_fields = ['name', 'created_by__username', 'presentation__research_title']
+    readonly_fields = ['created_at', 'updated_at']

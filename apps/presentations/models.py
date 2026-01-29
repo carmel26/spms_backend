@@ -310,3 +310,56 @@ class PresentationAssessment(models.Model):
     
     def __str__(self):
         return f"Assessment by {self.examiner_assignment.examiner.get_full_name()}"
+
+
+class Form(models.Model):
+    """Generic form submissions related to presentations.
+
+    Stores the entire form payload in a JSON `data` field so the frontend
+    can render/edit the form from a single object rather than many columns.
+    This model is linked optionally to a `PresentationRequest` and to the
+    `BlockchainRecord` for tamper-evident storage when required.
+    """
+
+    ROLE_CHOICES = (
+        ('student', 'Student'),
+        ('supervisor', 'Supervisor'),
+        ('examiner', 'Examiner'),
+        ('other', 'Other'),
+    )
+
+    name = models.CharField(max_length=255, help_text='Human readable form name')
+    form_role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='student')
+    presentation = models.ForeignKey(
+        PresentationRequest,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='forms',
+        help_text='Optional presentation this form is associated with'
+    )
+    data = models.JSONField(help_text='JSON payload containing the form fields and values')
+
+    created_by = models.ForeignKey(
+        'users.CustomUser',
+        on_delete=models.PROTECT,
+        related_name='forms_created'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Link to blockchain record when the form is stored on-chain
+    blockchain_record = models.ForeignKey(
+        'blockchain.BlockchainRecord',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='forms'
+    )
+
+    class Meta:
+        db_table = 'form'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} ({self.form_role}) - {self.created_by.get_full_name()}"

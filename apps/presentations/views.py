@@ -19,6 +19,7 @@ from apps.presentations.serializers import (
     BasicUserSerializer,
     ExaminerAssignmentSerializer,
     ExaminerChangeHistorySerializer,
+    FormSerializer,
 )
 from apps.schools.models import PresentationType
 from apps.users.models import CustomUser, StudentProfile
@@ -29,6 +30,19 @@ from apps.notifications.utils import (
     send_presentation_submitted_notification,
     send_session_moderator_assignment_notification,
 )
+
+from rest_framework import permissions
+from apps.presentations.models import Form as PresentationForm
+
+
+class IsOwnerOrCoordinator(permissions.BasePermission):
+    """Allow access if the user is the owner (created_by) or a coordinator."""
+
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+        if hasattr(obj, 'created_by') and obj.created_by == user:
+            return True
+        return user.user_groups.filter(name='coordinator').exists()
 
 
 class PresentationRequestViewSet(viewsets.ModelViewSet):
@@ -602,3 +616,28 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
             'message': 'Presentation marked as viewed.',
             'presentation_id': presentation.id
         })
+
+
+
+class FormViewSet(viewsets.ModelViewSet):
+    """CRUD for `Form` objects storing JSON data."""
+
+    serializer_class = FormSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = PresentationForm.objects.all().select_related('created_by', 'presentation', 'blockchain_record')
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = super().get_queryset()
+        # Students see their own created forms; coordinators see all
+        if user.user_groups.filter(name='coordinator').exists():
+            return qs
+        return qs.filter(created_by=user)
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    def perform_update(self, serializer):
+        # Preserve created_by
+        serializer.save()
+
