@@ -4,6 +4,12 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from .models import School, Programme, PresentationType
 from .serializers import SchoolSerializer, ProgrammeSerializer, PresentationTypeSerializer
+from django.shortcuts import get_object_or_404
+from apps.users.models import CustomUser
+from rest_framework.decorators import action
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework import status
 
 
 class SchoolViewSet(viewsets.ModelViewSet):
@@ -41,6 +47,36 @@ class SchoolViewSet(viewsets.ModelViewSet):
         """Ensure PATCH works with partial payloads like dean assignment."""
         kwargs['partial'] = True
         return super().update(request, *args, **kwargs)
+
+    @action(detail=True, methods=['get'], permission_classes=[AllowAny])
+    def programme(self, request, pk=None):
+        """Return school and programme information.
+
+        The endpoint supports two behaviours for compatibility:
+        - If `pk` matches a School id, return that school's name and a list of its programmes.
+        - If `pk` matches a User id, return the user's linked school and programme names.
+        """
+        # Try to find a School first
+        try:
+            school = get_object_or_404(School, pk=pk)
+            programmes = Programme.objects.filter(school=school)
+            programme_name = programmes.first().name if programmes.exists() else None
+            return Response({
+                'school_name': school.name,
+                'programme_name': programme_name
+            })
+        except Exception:
+            # If no school found, try interpreting pk as a user id
+            try:
+                user = get_object_or_404(CustomUser, pk=pk)
+                school = user.school
+                programme = user.programme
+                return Response({
+                    'school_name': school.name if school else None,
+                    'programme_name': programme.name if programme else None
+                })
+            except Exception:
+                return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
 class ProgrammeViewSet(viewsets.ModelViewSet):

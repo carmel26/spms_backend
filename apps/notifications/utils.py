@@ -532,18 +532,10 @@ def send_supervisor_assignment_notification(supervisor, presentation_request, as
     title = 'New Supervisor Assignment'
     message = f'You have been assigned as a supervisor for the presentation: "{presentation_request.research_title}" by {presentation_request.student.get_full_name()}.'
 
-    # Create in-app notification if recipient has an account
-    try:
-        notification = Notification.objects.create(
-            recipient=supervisor,
-            title=title,
-            message=message,
-            notification_type='supervisor_assignment',
-            presentation=presentation_request,
-            related_user=assigned_by
-        )
-    except Exception:
-        notification = None
+    # Do not create an in-app Notification object here; supervisors will
+    # view assignments in the notifications bar when they log in. Keep
+    # `notification` variable for compatibility but do not persist.
+    notification = None
 
     # Send email (best-effort)
     # Send email using HTML/text templates and log failures
@@ -579,11 +571,13 @@ def send_supervisor_assignment_notification(supervisor, presentation_request, as
         to_emails = [supervisor.email] if getattr(supervisor, 'email', None) else []
 
         if to_emails:
+            logger.info('Attempting to send supervisor assignment email to %s', to_emails)
             msg = EmailMultiAlternatives(subject, text_body, from_email, to_emails)
             if html_body:
                 msg.attach_alternative(html_body, 'text/html')
             try:
                 msg.send(fail_silently=False)
+                logger.info('Supervisor assignment email sent to %s', to_emails)
             except Exception as send_err:
                 logger.exception('Failed to send supervisor assignment email: %s', send_err)
     except Exception:

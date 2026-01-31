@@ -28,6 +28,7 @@ from apps.notifications.utils import (
     send_examiner_response_notification,
     send_presentation_completed_notification,
     send_presentation_submitted_notification,
+    send_supervisor_assignment_notification,
     send_session_moderator_assignment_notification,
 )
 
@@ -630,14 +631,453 @@ class FormViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = super().get_queryset()
         # Students see their own created forms; coordinators see all
+        # Coordinators see all
         if user.user_groups.filter(name='coordinator').exists():
             return qs
+
+        # Admin users see all as well
+        try:
+            if user.user_groups.filter(name='admin').exists() or getattr(user, 'role', '') == 'admin':
+                return qs
+        except Exception:
+            pass
+
+        # Supervisors should see forms assigned to them (either via the linked Presentation
+        # or via selected_supervisor(s) stored in the JSON `data` field). Students should
+        # continue to see their own created forms.
+        if user.user_groups.filter(name='supervisor').exists():
+            # Build a queryset that includes forms where:
+            # - created_by is the user (safe)
+            # - the linked presentation has this user in its supervisors relation
+            # - OR the JSON data contains a selected_supervisor(s) equal to this user's id
+            try:
+                from django.db.models import Q
+                uid = int(user.id)
+                q = Q(created_by=user) | Q(presentation__supervisors__id=uid)
+
+                # JSONField lookups - try a couple of common shapes. These lookups may
+                # depend on the DB backend (Postgres supports JSONField contains lookups).
+                # We check for array contains and string/int equality where possible.
+                try:
+                    q |= Q(data__selected_supervisors__contains=[uid])
+                except Exception:
+                    pass
+                try:
+                    q |= Q(data__selected_supervisor=uid)
+                except Exception:
+                    pass
+                try:
+                    # sometimes stored as string
+                    q |= Q(data__selected_supervisor__contains=str(uid))
+                except Exception:
+                    pass
+
+                return qs.filter(q).distinct()
+            except Exception:
+                # Fallback: return forms created by the user only
+                return qs.filter(created_by=user)
+
+        # Default: students and other roles see only forms they created
         return qs.filter(created_by=user)
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        instance = serializer.save(created_by=self.request.user)
+
+        # If the form payload included a selected supervisor, notify them to
+        # complete the supervisor part of the form (Part B).
+        try:
+            data = getattr(instance, 'data', {}) or {}
+            sel = data.get('selected_supervisor') or data.get('selected_supervisors')
+            if sel:
+                # sel might be a single id or a list
+                from apps.users.models import CustomUser
+                from apps.notifications.models import Notification
+
+                ids = sel if isinstance(sel, list) else [sel]
+                for sid in ids:
+                    try:
+                        sup = CustomUser.objects.get(id=int(sid))
+                    except Exception:
+                        sup = None
+                    if sup:
+                        try:
+                            # Prefer sending the backend's supervisor assignment email/template when we have
+                            # a linked PresentationRequest. This sends an email using the same design as
+                            # other supervisor assignment flows and is best-effort.
+                            if getattr(instance, 'presentation', None):
+                                send_supervisor_assignment_notification(sup, instance.presentation, assigned_by=instance.created_by)
+                            else:
+                                # No presentation associated: send a simple email using same template files
+                                try:
+                                    from django.conf import settings
+                                    from django.template.loader import render_to_string
+                                    from django.core.mail import EmailMultiAlternatives
+                                    import logging
+
+                                    logger = logging.getLogger(__name__)
+                                    title = 'Action required: Complete Part B'
+                                    message = f'{instance.created_by.get_full_name()} has submitted a Research Progress Report and requested supervisor input. Please log in to the system to complete your part.'
+                                    context = {
+                                        'presentation': None,
+                                        'recipient': sup,
+                                        'assigned_by': instance.created_by,
+                                        'role_label': 'Supervisor',
+                                        'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
+                                        'honorific': ''
+                                    }
+                                    try:
+                                        html_body = render_to_string('emails/examiner_assignment.html', context)
+                                    except Exception:
+                                        html_body = None
+                                    try:
+                                        text_body = render_to_string('emails/examiner_assignment.txt', context)
+                                    except Exception:
+                                        text_body = message
+
+                                    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
+                                    to_emails = [sup.email] if getattr(sup, 'email', None) else []
+                                    if to_emails:
+                                        msg = EmailMultiAlternatives(title, text_body, from_email, to_emails)
+                                        if html_body:
+                                            msg.attach_alternative(html_body, 'text/html')
+                                        try:
+                                            logger.info('Attempting to send supervisor email (form create) to %s', to_emails)
+                                            msg.send(fail_silently=False)
+                                            logger.info('Supervisor email (form create) sent to %s', to_emails)
+                                        except Exception as send_err:
+                                            logger.exception('Failed to send supervisor email from form create: %s', send_err)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+        except Exception:
+            # Non-fatal: don't block form creation on notification failures
+            pass
 
     def perform_update(self, serializer):
         # Preserve created_by
-        serializer.save()
+        instance = serializer.save()
+        # If supervisor selection changed on update, optionally notify newly selected supervisors
+        try:
+            data = getattr(instance, 'data', {}) or {}
+            sel = data.get('selected_supervisor') or data.get('selected_supervisors')
+            if sel:
+                from apps.users.models import CustomUser
+                from apps.notifications.models import Notification
+                ids = sel if isinstance(sel, list) else [sel]
+                for sid in ids:
+                    try:
+                        sup = CustomUser.objects.get(id=int(sid))
+                    except Exception:
+                        sup = None
+                    if sup:
+                        try:
+                            if getattr(instance, 'presentation', None):
+                                send_supervisor_assignment_notification(sup, instance.presentation, assigned_by=instance.created_by)
+                            else:
+                                # Send email fallback when presentation is not linked
+                                try:
+                                    from django.conf import settings
+                                    from django.template.loader import render_to_string
+                                    from django.core.mail import EmailMultiAlternatives
+                                    import logging
+
+                                    logger = logging.getLogger(__name__)
+                                    title = 'Action required: Complete Part B'
+                                    message = f'{instance.created_by.get_full_name()} has updated a Research Progress Report and requested supervisor input. Please log in to the system to complete your part.'
+                                    context = {
+                                        'presentation': None,
+                                        'recipient': sup,
+                                        'assigned_by': instance.created_by,
+                                        'role_label': 'Supervisor',
+                                        'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
+                                        'honorific': ''
+                                    }
+                                    try:
+                                        html_body = render_to_string('emails/examiner_assignment.html', context)
+                                    except Exception:
+                                        html_body = None
+                                    try:
+                                        text_body = render_to_string('emails/examiner_assignment.txt', context)
+                                    except Exception:
+                                        text_body = message
+
+                                    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
+                                    to_emails = [sup.email] if getattr(sup, 'email', None) else []
+                                    if to_emails:
+                                            msg = EmailMultiAlternatives(title, text_body, from_email, to_emails)
+                                            if html_body:
+                                                msg.attach_alternative(html_body, 'text/html')
+                                            try:
+                                                logger.info('Attempting to send supervisor email (form update) to %s', to_emails)
+                                                msg.send(fail_silently=False)
+                                                logger.info('Supervisor email (form update) sent to %s', to_emails)
+                                            except Exception as send_err:
+                                                logger.exception('Failed to send supervisor email from form update: %s', send_err)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        return instance
+
+    @action(detail=False, methods=['get'], url_path='last-supervisors')
+    def last_supervisors(self, request):
+        """Return supervisors from the current user's most recent form submission.
+
+        This helps frontend pre-select supervisors the student used previously.
+        """
+        user = request.user
+        try:
+            # Get the most recent form the student submitted (may contain a selected_supervisor)
+            last = PresentationForm.objects.filter(created_by=user).order_by('-created_at').first()
+
+            # Also fetch the most recent PresentationRequest submitted by the student
+            last_preq = PresentationRequest.objects.filter(student=user).order_by('-created_at').first()
+
+            if not last and not last_preq:
+                return Response({'presentation': None, 'supervisors': [], 'last_selected_supervisor': None})
+
+            data = getattr(last, 'data', {}) or {}
+
+            # Collect candidate supervisor ids from various possible shapes in stored data
+            candidate_ids = set()
+
+            def extract_id(x):
+                # Try several ways to extract an integer id from x
+                try:
+                    if x is None:
+                        return None
+                    if isinstance(x, int):
+                        return int(x)
+                    if isinstance(x, str):
+                        # attempt to parse an integer inside the string
+                        import re
+                        m = re.search(r"(\d+)", x)
+                        if m:
+                            return int(m.group(1))
+                        return None
+                    if isinstance(x, dict):
+                        for k in ('id', 'value', 'user_id', 'supervisor_id'):
+                            if k in x and x[k] is not None:
+                                try:
+                                    return int(x[k])
+                                except Exception:
+                                    continue
+                        return None
+                except Exception:
+                    return None
+
+            # Common keys that might hold the selection
+            possible_keys = ['selected_supervisor', 'selected_supervisors', 'supervisors', 'selected', 'selected_ids']
+            for k in possible_keys:
+                if k in data and data[k] is not None:
+                    val = data[k]
+                    if isinstance(val, list):
+                        for item in val:
+                            iid = extract_id(item)
+                            if iid:
+                                candidate_ids.add(iid)
+                    else:
+                        iid = extract_id(val)
+                        if iid:
+                            candidate_ids.add(iid)
+
+            # Prefer supervisors from the student's most recent PresentationRequest if available
+            pres = None
+            if last_preq is not None:
+                try:
+                    pres = last_preq
+                    for sup in pres.supervisors.all():
+                        candidate_ids.add(int(sup.id))
+                except Exception:
+                    pres = last_preq
+            elif getattr(last, 'presentation', None):
+                try:
+                    pres = last.presentation
+                    for sup in pres.supervisors.all():
+                        candidate_ids.add(int(sup.id))
+                except Exception:
+                    pres = last.presentation
+
+            from apps.users.models import CustomUser
+            from apps.presentations.serializers import BasicUserSerializer
+
+            # If we have no candidate ids and no presentation supervisors, return empty
+            if not candidate_ids and pres is None:
+                return Response({'presentation': None, 'supervisors': [], 'last_selected_supervisor': None})
+
+            # If we have a linked presentation, prefer the supervisors from that relation
+            if pres is not None:
+                users_qs = pres.supervisors.all()
+            else:
+                users_qs = CustomUser.objects.filter(id__in=list(candidate_ids))
+
+            # Extract last selected supervisor id from the last form's data (if present)
+            last_selected = None
+            try:
+                ls = data.get('selected_supervisor') or data.get('selected') or data.get('selected_supervisors')
+                if isinstance(ls, list) and ls:
+                    last_selected = int(ls[-1])
+                elif ls is not None:
+                    # try to coerce
+                    last_selected = int(ls)
+            except Exception:
+                last_selected = None
+
+            # Serialize and return
+            response = {
+                'presentation': {
+                    'id': pres.id,
+                    'research_title': getattr(pres, 'research_title', '')
+                } if pres is not None else None,
+                'supervisors': BasicUserSerializer(users_qs, many=True).data,
+                'last_selected_supervisor': last_selected
+            }
+            try:
+                print('last_supervisors response:', response)
+            except Exception:
+                pass
+            return Response(response)
+        except Exception:
+            return Response({'supervisors': []})
+
+    def create(self, request, *args, **kwargs):
+        """Override create to provide clearer server-side logging on bad requests."""
+        serializer = self.get_serializer(data=request.data, context=self.get_serializer_context())
+        if not serializer.is_valid():
+            try:
+                print('FormViewSet.create: validation failed for user', getattr(request.user, 'id', None))
+                print('Request data snapshot:', request.data)
+                print('Serializer errors:', serializer.errors)
+            except Exception as e:
+                print('Error logging create validation failure:', e)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # If valid, proceed with default handling (will call perform_create)
+        return super().create(request, *args, **kwargs)
+
+    def retrieve(self, request, *args, **kwargs):
+        """Return a form instance and augment the response with supervisor details
+
+        This performs a backend query for any supervisor id(s) stored in the
+        form's JSON `data` so the frontend can display human-friendly names
+        and titles instead of raw ids.
+        """
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        resp_data = serializer.data
+
+        try:
+            form_data = (getattr(instance, 'data', {}) or {})
+
+            # Look for various keys that may contain selected supervisor id(s)
+            sel = None
+            for k in ('selected_supervisor', 'selected', 'selected_supervisors', 'supervisors', 'selected_ids'):
+                if k in form_data and form_data[k] is not None:
+                    sel = form_data[k]
+                    break
+
+            ids = []
+            if sel is not None:
+                if isinstance(sel, list):
+                    for v in sel:
+                        try:
+                            ids.append(int(v))
+                        except Exception:
+                            continue
+                else:
+                    try:
+                        ids.append(int(sel))
+                    except Exception:
+                        # sometimes the id may be embedded in a string like "user:12"
+                        import re
+                        m = re.search(r"(\d+)", str(sel))
+                        if m:
+                            try:
+                                ids.append(int(m.group(1)))
+                            except Exception:
+                                pass
+
+            # If we found any ids, query and serialize those users
+            if ids:
+                from apps.users.models import CustomUser
+                from apps.presentations.serializers import BasicUserSerializer
+
+                users_qs = CustomUser.objects.filter(id__in=ids)
+                resp_data['supervisors'] = BasicUserSerializer(users_qs, many=True).data
+                # also include a single detail field for convenience
+                first = users_qs.first()
+                if first:
+                    resp_data['selected_supervisor_detail'] = BasicUserSerializer(first).data
+        except Exception:
+            # Non-fatal: return base serialized data if augmentation fails
+            pass
+
+        return Response(resp_data)
+
+    def perform_update(self, serializer):
+        """Save the instance and ensure supervisor signature fields are persisted
+
+        When supervisors submit Part B we store their input under `data.supervisor_part_b`.
+        For convenience and compatibility with some detail views, copy commonly-used
+        supervisor signature fields into top-level keys under `data` so they are
+        immediately visible without needing to traverse nested objects.
+        """
+        instance = serializer.save()
+        try:
+            data = getattr(instance, 'data', {}) or {}
+            sup = data.get('supervisor_part_b') or {}
+            # Ensure signature_name is set to the connected user's name when supervisor is submitting
+            try:
+                req_user = getattr(self.request, 'user', None)
+                if req_user and sup is not None:
+                    has_sig = sup.get('include_signature') or sup.get('signature_hash') or sup.get('signature_signed_at')
+                    # build a reasonable display name
+                    if not sup.get('signature_name') and has_sig:
+                        user_name = None
+                        try:
+                            user_name = getattr(req_user, 'full_name_with_title', None)
+                        except Exception:
+                            user_name = None
+                        if not user_name:
+                            fn = getattr(req_user, 'first_name', '') or ''
+                            ln = getattr(req_user, 'last_name', '') or ''
+                            user_name = f"{fn} {ln}".strip() or getattr(req_user, 'username', None)
+                        if user_name:
+                            sup['signature_name'] = user_name
+            except Exception:
+                pass
+
+            if sup:
+                changed = False
+                # prefer explicit supervisor signature keys inside supervisor_part_b
+                sig_hash = sup.get('signature_hash') or sup.get('supervisor_signature_hash')
+                sig_name = sup.get('signature_name') or sup.get('supervisor_name')
+                sig_at = sup.get('signature_signed_at') or sup.get('supervisor_signed_at')
+
+                if sig_hash:
+                    # mirror under a stable top-level key
+                    if data.get('signature_hash_supervisor') != sig_hash:
+                        data['signature_hash_supervisor'] = sig_hash
+                        changed = True
+                if sig_name:
+                    if data.get('signature_name_supervisor') != sig_name:
+                        data['signature_name_supervisor'] = sig_name
+                        changed = True
+                if sig_at:
+                    if data.get('signature_signed_at_supervisor') != sig_at:
+                        data['signature_signed_at_supervisor'] = sig_at
+                        changed = True
+
+                if changed:
+                    instance.data = data
+                    instance._current_user = getattr(self.request, 'user', None)
+                    instance.save()
+        except Exception:
+            # Non-fatal: don't block the update if mirroring fails
+            pass
+        return instance
 
