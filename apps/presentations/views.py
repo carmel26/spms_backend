@@ -642,36 +642,55 @@ class FormViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
 
-        # Supervisors should see forms assigned to them (either via the linked Presentation
-        # or via selected_supervisor(s) stored in the JSON `data` field). Students should
-        # continue to see their own created forms.
-        if user.user_groups.filter(name='supervisor').exists():
-            # Build a queryset that includes forms where:
-            # - created_by is the user (safe)
-            # - the linked presentation has this user in its supervisors relation
-            # - OR the JSON data contains a selected_supervisor(s) equal to this user's id
+        # Check if user is supervisor
+        is_supervisor = user.user_groups.filter(name='supervisor').exists()
+        
+        # Check if user is dean/chairman
+        is_dean = user.user_groups.filter(name__in=['dean', 'chairman']).exists()
+        
+        # Handle dual-role users (supervisor + dean) or single-role users
+        if is_supervisor or is_dean:
             try:
                 from django.db.models import Q
                 uid = int(user.id)
-                q = Q(created_by=user) | Q(presentation__supervisors__id=uid)
-
-                # JSONField lookups - try a couple of common shapes. These lookups may
-                # depend on the DB backend (Postgres supports JSONField contains lookups).
-                # We check for array contains and string/int equality where possible.
-                try:
-                    q |= Q(data__selected_supervisors__contains=[uid])
-                except Exception:
-                    pass
-                try:
-                    q |= Q(data__selected_supervisor=uid)
-                except Exception:
-                    pass
-                try:
-                    # sometimes stored as string
-                    q |= Q(data__selected_supervisor__contains=str(uid))
-                except Exception:
-                    pass
-
+                q = Q()
+                
+                if is_supervisor:
+                    # Forms where user is assigned as supervisor
+                    q |= Q(created_by=user)
+                    q |= Q(presentation__supervisors__id=uid)
+                    
+                    # JSONField lookups for supervisor assignment
+                    try:
+                        q |= Q(data__selected_supervisors__contains=[uid])
+                    except Exception:
+                        pass
+                    try:
+                        q |= Q(data__selected_supervisor=uid)
+                    except Exception:
+                        pass
+                    try:
+                        # sometimes stored as string
+                        q |= Q(data__selected_supervisor__contains=str(uid))
+                    except Exception:
+                        pass
+                
+                if is_dean:
+                    # Forms where supervisor has completed Part B (ready for dean review)
+                    # AND dean hasn't signed yet
+                    try:
+                        q |= Q(
+                            data__supervisor_part_b__signature_hash__isnull=False
+                        ) & ~Q(
+                            data__dean_part_c__signature_hash__isnull=False
+                        )
+                    except Exception:
+                        # Fallback: just check if supervisor signed
+                        try:
+                            q |= Q(data__supervisor_part_b__signature_hash__isnull=False)
+                        except Exception:
+                            pass
+                
                 return qs.filter(q).distinct()
             except Exception:
                 # Fallback: return forms created by the user only
@@ -821,7 +840,235 @@ class FormViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
 
+        # Check if supervisor has completed Part B and notify the dean
+        try:
+            data = getattr(instance, 'data', {}) or {}
+            supervisor_part_b = data.get('supervisor_part_b', {})
+            
+            # If supervisor has signed Part B, assign to dean
+            if supervisor_part_b and supervisor_part_b.get('signature_hash'):
+                # Get the school from the form data
+                school_name = data.get('school') or data.get('degree_programme')
+                
+                if school_name:
+                    from apps.users.models import CustomUser, School
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    
+                    try:
+                        # Find the school
+                        school = School.objects.filter(name__icontains=school_name).first()
+                        
+                        if school and school.dean:
+                            dean = school.dean
+                            
+                            # Send notification to dean
+                            try:
+                                from apps.notifications.models import Notification
+                                Notification.objects.create(
+                                    user=dean,
+                                    message=f'Action required: Complete Part C (Dean Response) for {data.get("student_full_name", "a student")}\'s Research Progress Report.',
+                                    notification_type='form_assignment',
+                                    related_object_id=instance.id,
+                                    related_content_type='form'
+                                )
+                                logger.info(f'Notification sent to dean {dean.username} for form {instance.id}')
+                            except Exception as notif_err:
+                                logger.error(f'Failed to create notification for dean: {notif_err}')
+                            
+                            # Send email to dean
+                            try:
+                                from django.conf import settings
+                                from django.template.loader import render_to_string
+                                from django.core.mail import EmailMultiAlternatives
+                                
+                                title = 'Action required: Complete Part C (Dean Response)'
+                                message = f'A supervisor has completed Part B of a Research Progress Report for {data.get("student_full_name", "a student")}. Please log in to complete Part C (Dean/Chairman Response).'
+                                
+                                context = {
+                                    'presentation': None,
+                                    'recipient': dean,
+                                    'assigned_by': instance.created_by,
+                                    'role_label': 'Dean/Chairman',
+                                    'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
+                                    'honorific': ''
+                                }
+                                
+                                try:
+                                    html_body = render_to_string('emails/examiner_assignment.html', context)
+                                except Exception:
+                                    html_body = None
+                                    
+                                try:
+                                    text_body = render_to_string('emails/examiner_assignment.txt', context)
+                                except Exception:
+                                    text_body = message
+                                
+                                from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
+                                to_emails = [dean.email] if getattr(dean, 'email', None) else []
+                                
+                                if to_emails:
+                                    msg = EmailMultiAlternatives(title, text_body, from_email, to_emails)
+                                    if html_body:
+                                        msg.attach_alternative(html_body, 'text/html')
+                                    try:
+                                        logger.info(f'Attempting to send dean email to {to_emails}')
+                                        msg.send(fail_silently=False)
+                                        logger.info(f'Dean email sent to {to_emails}')
+                                    except Exception as send_err:
+                                        logger.exception(f'Failed to send dean email: {send_err}')
+                            except Exception as email_err:
+                                logger.error(f'Failed to send dean email: {email_err}')
+                        else:
+                            logger.warning(f'No dean found for school: {school_name}')
+                    except Exception as school_err:
+                        logger.error(f'Failed to process dean assignment: {school_err}')
+        except Exception as dean_err:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f'Failed to notify dean: {dean_err}')
+
         return instance
+
+    @action(detail=False, methods=['get'], url_path='my-forms')
+    def my_forms(self, request):
+        """Get all forms linked to the current user as supervisor or dean.
+        
+        This action returns forms where:
+        - User is assigned as supervisor (in any supervisor field)
+        - User is dean/chairman and supervisor has completed Part B (ready for dean signature)
+        
+        For dual-role users (supervisor + dean), returns both sets of forms.
+        Response includes metadata indicating the user's role(s) for each form.
+        """
+        user = request.user
+        uid = int(user.id)
+        
+        # Check if user is supervisor
+        is_supervisor = user.user_groups.filter(name='supervisor').exists()
+        
+        # Check if user is dean/chairman
+        is_dean = user.user_groups.filter(name__in=['dean', 'chairman']).exists()
+        
+        # If neither supervisor nor dean, return empty
+        if not is_supervisor and not is_dean:
+            return Response({
+                'results': [],
+                'count': 0,
+                'is_supervisor': False,
+                'is_dean': False,
+                'message': 'User is neither supervisor nor dean'
+            })
+        
+        from django.db.models import Q
+        
+        # Build query based on roles
+        supervisor_q = Q()
+        dean_q = Q()
+        
+        if is_supervisor:
+            # Forms where user is assigned as supervisor
+            try:
+                # Check linked presentation supervisors
+                supervisor_q |= Q(presentation__supervisors__id=uid)
+                
+                # Check JSON data fields for supervisor assignment
+                supervisor_q |= Q(data__selected_supervisors__contains=[uid])
+                supervisor_q |= Q(data__selected_supervisor=uid)
+                supervisor_q |= Q(data__selected_supervisor__contains=str(uid))
+            except Exception:
+                pass
+        
+        if is_dean:
+            # Forms where supervisor has completed Part B (ready for dean review)
+            # AND dean hasn't signed yet (to avoid showing already completed forms)
+            try:
+                dean_q = Q(
+                    data__supervisor_part_b__signature_hash__isnull=False
+                ) & ~Q(
+                    data__dean_part_c__signature_hash__isnull=False
+                )
+            except Exception:
+                # Fallback: just check if supervisor signed
+                try:
+                    dean_q = Q(data__supervisor_part_b__signature_hash__isnull=False)
+                except Exception:
+                    pass
+        
+        # Combine queries
+        combined_q = Q()
+        if is_supervisor:
+            combined_q |= supervisor_q
+        if is_dean:
+            combined_q |= dean_q
+        
+        # Apply filter and get distinct results
+        qs = self.get_queryset().filter(combined_q).distinct().order_by('-created_at')
+        
+        # Serialize and add role metadata to each form
+        serializer = self.get_serializer(qs, many=True)
+        results = serializer.data
+        
+        # Annotate each form with the user's role for that form
+        for item in results:
+            form_id = item.get('id')
+            try:
+                form = qs.get(id=form_id)
+                data = getattr(form, 'data', {}) or {}
+                
+                # Check if user is assigned as supervisor for this specific form
+                is_assigned_supervisor = False
+                if is_supervisor:
+                    try:
+                        # Check various supervisor fields
+                        selected_sups = data.get('selected_supervisors', [])
+                        selected_sup = data.get('selected_supervisor')
+                        
+                        if isinstance(selected_sups, list) and uid in selected_sups:
+                            is_assigned_supervisor = True
+                        elif selected_sup and int(selected_sup) == uid:
+                            is_assigned_supervisor = True
+                        elif form.presentation and form.presentation.supervisors.filter(id=uid).exists():
+                            is_assigned_supervisor = True
+                    except Exception:
+                        pass
+                
+                # Check if form needs dean signature
+                needs_dean_signature = False
+                if is_dean:
+                    try:
+                        supervisor_part = data.get('supervisor_part_b', {})
+                        dean_part = data.get('dean_part_c', {})
+                        
+                        # Needs dean signature if supervisor signed but dean hasn't
+                        if supervisor_part.get('signature_hash') and not dean_part.get('signature_hash'):
+                            needs_dean_signature = True
+                    except Exception:
+                        pass
+                
+                # Add metadata
+                item['user_role_for_form'] = {
+                    'is_assigned_supervisor': is_assigned_supervisor,
+                    'needs_dean_signature': needs_dean_signature,
+                    'supervisor_completed': bool(data.get('supervisor_part_b', {}).get('signature_hash')),
+                    'dean_completed': bool(data.get('dean_part_c', {}).get('signature_hash'))
+                }
+            except Exception:
+                # If annotation fails, continue without metadata
+                item['user_role_for_form'] = {
+                    'is_assigned_supervisor': False,
+                    'needs_dean_signature': False,
+                    'supervisor_completed': False,
+                    'dean_completed': False
+                }
+        
+        return Response({
+            'results': results,
+            'count': len(results),
+            'is_supervisor': is_supervisor,
+            'is_dean': is_dean,
+            'message': 'Success'
+        })
 
     @action(detail=False, methods=['get'], url_path='last-supervisors')
     def last_supervisors(self, request):

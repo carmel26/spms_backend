@@ -97,6 +97,26 @@ class CustomUserSerializer(serializers.ModelSerializer):
             return StudentProfileSerializer(obj.student_profile).data
         return None
     
+    def validate_email(self, value):
+        """Ensure email is unique"""
+        if not value:
+            raise serializers.ValidationError("Email is required")
+        
+        # Normalize email to lowercase
+        value = value.lower().strip()
+        
+        # Check if email already exists (exclude current instance for updates)
+        if self.instance:
+            # Updating existing user - exclude current user from uniqueness check
+            if CustomUser.objects.filter(email=value).exclude(pk=self.instance.pk).exists():
+                raise serializers.ValidationError("A user with this email already exists.")
+        else:
+            # Creating new user
+            if CustomUser.objects.filter(email=value).exists():
+                raise serializers.ValidationError("A user with this email already exists.")
+        
+        return value
+    
     def validate(self, data):
         """Validate that students can only have student role"""
         user_groups = data.get('user_groups', [])

@@ -95,6 +95,16 @@ class CustomUserManager(UserManager):
 class CustomUser(AbstractUser):
     """Extended User model with multiple roles support via ManyToMany relationship"""
     
+    # Override email field to make it unique and required
+    email = models.EmailField(
+        'email address',
+        unique=True,
+        error_messages={
+            'unique': 'A user with this email already exists.',
+        },
+        help_text="User's email address (must be unique)"
+    )
+    
     # Title field (Dr, Prof, Mr, Mrs, Ms)
     title = models.CharField(
         max_length=10,
