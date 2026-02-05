@@ -700,13 +700,24 @@ class FormViewSet(viewsets.ModelViewSet):
         return qs.filter(created_by=user)
 
     def perform_create(self, serializer):
+        import logging
+        logger = logging.getLogger(__name__)
         instance = serializer.save(created_by=self.request.user)
 
         # If the form payload included a selected supervisor, notify them to
         # complete the supervisor part of the form (Part B).
+        email_sent = False
         try:
             data = getattr(instance, 'data', {}) or {}
             sel = data.get('selected_supervisor') or data.get('selected_supervisors')
+            logger.info('='*60)
+            logger.info(f'📋 FORM CREATED - Processing email notification')
+            logger.info(f'RAW DATA OBJECT: {data}')
+            logger.info(f'Selected supervisor ID from form: {sel}')
+            logger.info(f'Type of sel: {type(sel)}')
+            logger.info(f'Form ID: {instance.id}')
+            logger.info(f'Created by: {instance.created_by.get_full_name()} (ID: {instance.created_by.id})')
+            logger.info('='*60)
             if sel:
                 # sel might be a single id or a list
                 from apps.users.models import CustomUser
@@ -716,7 +727,9 @@ class FormViewSet(viewsets.ModelViewSet):
                 for sid in ids:
                     try:
                         sup = CustomUser.objects.get(id=int(sid))
-                    except Exception:
+                        logger.info(f'✓ Found supervisor: {sup.get_full_name()} (ID: {sup.id}, Email: {sup.email})')
+                    except Exception as e:
+                        logger.warning(f'✗ Could not find supervisor with ID {sid}: {e}')
                         sup = None
                     if sup:
                         try:
@@ -725,6 +738,7 @@ class FormViewSet(viewsets.ModelViewSet):
                             # other supervisor assignment flows and is best-effort.
                             if getattr(instance, 'presentation', None):
                                 send_supervisor_assignment_notification(sup, instance.presentation, assigned_by=instance.created_by)
+                                email_sent = True
                             else:
                                 # No presentation associated: send a simple email using same template files
                                 try:
@@ -734,23 +748,40 @@ class FormViewSet(viewsets.ModelViewSet):
                                     import logging
 
                                     logger = logging.getLogger(__name__)
-                                    title = 'Action required: Complete Part B'
-                                    message = f'{instance.created_by.get_full_name()} has submitted a Research Progress Report and requested supervisor input. Please log in to the system to complete your part.'
+                                    
+                                    # Get student name and project title from form data
+                                    student_name = data.get('student_full_name', instance.created_by.get_full_name())
+                                    project_title = data.get('research_title', 'Research Progress Report')
+                                    
+                                    title = f'Action Required: Sign Form for {student_name}'
+                                    message = f'Dear {sup.get_full_name()},\n\n{student_name} has submitted a Research Progress Report for the project "{project_title}".\n\nYou are requested to log in to the system, review the report, and complete Part B (Supervisor Section) with your signature.\n\nPlease log in at your earliest convenience to complete this task.\n\nThank you.'
                                     context = {
                                         'presentation': None,
                                         'recipient': sup,
                                         'assigned_by': instance.created_by,
+                                        'student_name': student_name,
+                                        'project_title': project_title,
                                         'role_label': 'Supervisor',
                                         'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
                                         'honorific': ''
                                     }
+                                    logger.info('📧 Rendering email templates (FORM CREATE) with context:')
+                                    logger.info(f'  - Student: {student_name}')
+                                    logger.info(f'  - Project: {project_title}')
+                                    logger.info(f'  - Recipient: {sup.get_full_name()}')
+                                    logger.info(f'  - Role: Supervisor')
+                                    
                                     try:
-                                        html_body = render_to_string('emails/examiner_assignment.html', context)
-                                    except Exception:
+                                        html_body = render_to_string('emails/supervisor_form_notification.html', context)
+                                        logger.info('✓ HTML email template rendered successfully')
+                                    except Exception as html_err:
+                                        logger.warning(f'✗ Failed to render HTML template: {html_err}')
                                         html_body = None
                                     try:
-                                        text_body = render_to_string('emails/examiner_assignment.txt', context)
-                                    except Exception:
+                                        text_body = render_to_string('emails/supervisor_form_notification.txt', context)
+                                        logger.info('✓ Text email template rendered successfully')
+                                    except Exception as txt_err:
+                                        logger.warning(f'✗ Failed to render text template: {txt_err}')
                                         text_body = message
 
                                     from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
@@ -760,85 +791,154 @@ class FormViewSet(viewsets.ModelViewSet):
                                         if html_body:
                                             msg.attach_alternative(html_body, 'text/html')
                                         try:
-                                            logger.info('Attempting to send supervisor email (form create) to %s', to_emails)
+                                            logger.info('=' * 60)
+                                            logger.info('SENDING SUPERVISOR EMAIL (Form Create)')
+                                            logger.info(f'To: {to_emails}')
+                                            logger.info(f'From: {from_email}')
+                                            logger.info(f'Subject: {title}')
+                                            logger.info(f'Student: {student_name}')
+                                            logger.info(f'Project: {project_title}')
+                                            logger.info('=' * 60)
                                             msg.send(fail_silently=False)
-                                            logger.info('Supervisor email (form create) sent to %s', to_emails)
+                                            logger.info('✓ Supervisor email (form create) successfully sent to %s', to_emails)
+                                            logger.info('Email may take a few moments to arrive. Check spam folder if not in inbox.')
+                                            email_sent = True
                                         except Exception as send_err:
-                                            logger.exception('Failed to send supervisor email from form create: %s', send_err)
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
-        except Exception:
+                                            logger.exception('✗ Failed to send supervisor email from form create: %s', send_err)
+                                    else:
+                                        logger.warning(f'No email address for supervisor {sup.id}')
+                                except Exception as email_err:
+                                    logger.exception(f'Error preparing email: {email_err}')
+                        except Exception as sup_err:
+                            logger.exception(f'Error notifying supervisor: {sup_err}')
+            else:
+                logger.warning('⚠️ No supervisor selected (sel is None or empty) in FORM CREATE')
+                logger.warning(f'Available keys in data: {list(data.keys())}')
+        except Exception as outer_err:
             # Non-fatal: don't block form creation on notification failures
-            pass
+            logger.exception(f'Error in supervisor notification process: {outer_err}')
+        
+        # Store email status in instance for serializer response
+        if hasattr(instance, '__dict__'):
+            instance._email_sent = email_sent
+            instance._email_status = 'sent' if email_sent else 'not_sent'
+    
+    def update(self, request, *args, **kwargs):
+        """Override update to ensure perform_update is called with email logic"""
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        
+        # Call perform_update which contains our email logic
+        self.perform_update(serializer)
+        
+        # Get updated instance with email status
+        instance = serializer.instance
+        
+        if getattr(instance, '_prefetched_objects_cache', None):
+            instance._prefetched_objects_cache = {}
+
+        # Build response data with email status
+        response_data = serializer.data
+        response_data['email_sent'] = getattr(instance, '_email_sent', False)
+        response_data['email_status'] = getattr(instance, '_email_status', 'not_sent')
+
+        return Response(response_data)
 
     def perform_update(self, serializer):
+        import logging
+        logger = logging.getLogger(__name__)
+        
         # Preserve created_by
         instance = serializer.save()
+        
         # If supervisor selection changed on update, optionally notify newly selected supervisors
+        email_sent = False
+        
         try:
             data = getattr(instance, 'data', {}) or {}
             sel = data.get('selected_supervisor') or data.get('selected_supervisors')
+            
             if sel:
                 from apps.users.models import CustomUser
                 from apps.notifications.models import Notification
                 ids = sel if isinstance(sel, list) else [sel]
+                
                 for sid in ids:
                     try:
                         sup = CustomUser.objects.get(id=int(sid))
-                    except Exception:
+                        logger.info(f'Found supervisor: {sup.get_full_name()} ({sup.email})')
+                    except Exception as e:
+                        logger.warning(f'Could not find supervisor with ID {sid}: {e}')
                         sup = None
+                    
                     if sup:
-                        try:
-                            if getattr(instance, 'presentation', None):
-                                send_supervisor_assignment_notification(sup, instance.presentation, assigned_by=instance.created_by)
-                            else:
-                                # Send email fallback when presentation is not linked
+                        if getattr(instance, 'presentation', None):
+                            send_supervisor_assignment_notification(sup, instance.presentation, assigned_by=instance.created_by)
+                            email_sent = True
+                        else:
+                            # Send email fallback when presentation is not linked
+                            try:
+                                from django.conf import settings
+                                from django.template.loader import render_to_string
+                                from django.core.mail import EmailMultiAlternatives
+                                
+                                student_name = data.get('student_full_name', instance.created_by.get_full_name())
+                                project_title = data.get('research_title', 'Research Progress Report')
+                                
+                                title = f'Action Required: Sign Form for {student_name}'
+                                message = f'Dear {sup.get_full_name()},\n\n{student_name} has submitted a Research Progress Report for the project "{project_title}".\n\nPlease log in to complete Part B (Supervisor Section).\n\nThank you.'
+                                
+                                context = {
+                                    'presentation': None,
+                                    'recipient': sup,
+                                    'assigned_by': instance.created_by,
+                                    'student_name': student_name,
+                                    'project_title': project_title,
+                                    'role_label': 'Supervisor',
+                                    'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
+                                    'honorific': ''
+                                }
+                                
+                                # Render templates
+                                html_body = None
                                 try:
-                                    from django.conf import settings
-                                    from django.template.loader import render_to_string
-                                    from django.core.mail import EmailMultiAlternatives
-                                    import logging
-
-                                    logger = logging.getLogger(__name__)
-                                    title = 'Action required: Complete Part B'
-                                    message = f'{instance.created_by.get_full_name()} has updated a Research Progress Report and requested supervisor input. Please log in to the system to complete your part.'
-                                    context = {
-                                        'presentation': None,
-                                        'recipient': sup,
-                                        'assigned_by': instance.created_by,
-                                        'role_label': 'Supervisor',
-                                        'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
-                                        'honorific': ''
-                                    }
-                                    try:
-                                        html_body = render_to_string('emails/examiner_assignment.html', context)
-                                    except Exception:
-                                        html_body = None
-                                    try:
-                                        text_body = render_to_string('emails/examiner_assignment.txt', context)
-                                    except Exception:
-                                        text_body = message
-
-                                    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
-                                    to_emails = [sup.email] if getattr(sup, 'email', None) else []
-                                    if to_emails:
-                                            msg = EmailMultiAlternatives(title, text_body, from_email, to_emails)
-                                            if html_body:
-                                                msg.attach_alternative(html_body, 'text/html')
-                                            try:
-                                                logger.info('Attempting to send supervisor email (form update) to %s', to_emails)
-                                                msg.send(fail_silently=False)
-                                                logger.info('Supervisor email (form update) sent to %s', to_emails)
-                                            except Exception as send_err:
-                                                logger.exception('Failed to send supervisor email from form update: %s', send_err)
+                                    html_body = render_to_string('emails/supervisor_form_notification.html', context)
                                 except Exception:
                                     pass
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+                                
+                                text_body = message
+                                try:
+                                    text_body = render_to_string('emails/supervisor_form_notification.txt', context)
+                                except Exception:
+                                    pass
+                                
+                                from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'no-reply@localhost'
+                                to_emails = [sup.email] if getattr(sup, 'email', None) else []
+                                
+                                if to_emails:
+                                    msg = EmailMultiAlternatives(title, text_body, from_email, to_emails)
+                                    if html_body:
+                                        msg.attach_alternative(html_body, 'text/html')
+                                    
+                                    try:
+                                        msg.send(fail_silently=False)
+                                        logger.info(f'Supervisor email sent to {to_emails}')
+                                        email_sent = True
+                                    except Exception as send_err:
+                                        logger.exception(f'Failed to send supervisor email: {send_err}')
+                                        
+                            except Exception as email_err:
+                                logger.exception(f'Error preparing email: {email_err}')
+                
+        except Exception as outer_err:
+            logger.exception(f'Error in supervisor notification: {outer_err}')
+        
+        # Store email status in instance for serializer response
+        if hasattr(instance, '__dict__'):
+            instance._email_sent = email_sent
+            instance._email_status = 'sent' if email_sent else 'not_sent'
 
         # Check if supervisor has completed Part B and notify the dean
         try:
@@ -1264,67 +1364,4 @@ class FormViewSet(viewsets.ModelViewSet):
             pass
 
         return Response(resp_data)
-
-    def perform_update(self, serializer):
-        """Save the instance and ensure supervisor signature fields are persisted
-
-        When supervisors submit Part B we store their input under `data.supervisor_part_b`.
-        For convenience and compatibility with some detail views, copy commonly-used
-        supervisor signature fields into top-level keys under `data` so they are
-        immediately visible without needing to traverse nested objects.
-        """
-        instance = serializer.save()
-        try:
-            data = getattr(instance, 'data', {}) or {}
-            sup = data.get('supervisor_part_b') or {}
-            # Ensure signature_name is set to the connected user's name when supervisor is submitting
-            try:
-                req_user = getattr(self.request, 'user', None)
-                if req_user and sup is not None:
-                    has_sig = sup.get('include_signature') or sup.get('signature_hash') or sup.get('signature_signed_at')
-                    # build a reasonable display name
-                    if not sup.get('signature_name') and has_sig:
-                        user_name = None
-                        try:
-                            user_name = getattr(req_user, 'full_name_with_title', None)
-                        except Exception:
-                            user_name = None
-                        if not user_name:
-                            fn = getattr(req_user, 'first_name', '') or ''
-                            ln = getattr(req_user, 'last_name', '') or ''
-                            user_name = f"{fn} {ln}".strip() or getattr(req_user, 'username', None)
-                        if user_name:
-                            sup['signature_name'] = user_name
-            except Exception:
-                pass
-
-            if sup:
-                changed = False
-                # prefer explicit supervisor signature keys inside supervisor_part_b
-                sig_hash = sup.get('signature_hash') or sup.get('supervisor_signature_hash')
-                sig_name = sup.get('signature_name') or sup.get('supervisor_name')
-                sig_at = sup.get('signature_signed_at') or sup.get('supervisor_signed_at')
-
-                if sig_hash:
-                    # mirror under a stable top-level key
-                    if data.get('signature_hash_supervisor') != sig_hash:
-                        data['signature_hash_supervisor'] = sig_hash
-                        changed = True
-                if sig_name:
-                    if data.get('signature_name_supervisor') != sig_name:
-                        data['signature_name_supervisor'] = sig_name
-                        changed = True
-                if sig_at:
-                    if data.get('signature_signed_at_supervisor') != sig_at:
-                        data['signature_signed_at_supervisor'] = sig_at
-                        changed = True
-
-                if changed:
-                    instance.data = data
-                    instance._current_user = getattr(self.request, 'user', None)
-                    instance.save()
-        except Exception:
-            # Non-fatal: don't block the update if mirroring fails
-            pass
-        return instance
 

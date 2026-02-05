@@ -243,12 +243,22 @@ class FormSerializer(serializers.ModelSerializer):
     """Serializer for the Form model that stores JSON payloads."""
     created_by_detail = BasicUserSerializer(source='created_by', read_only=True)
     blockchain_record_id = serializers.IntegerField(source='blockchain_record.id', read_only=True)
+    email_sent = serializers.SerializerMethodField()
+    email_status = serializers.SerializerMethodField()
 
     class Meta:
         model = None  # set below to avoid import cycles
         fields = ['id', 'name', 'form_role', 'presentation', 'data', 'created_by', 'created_by_detail',
-                  'created_at', 'updated_at', 'blockchain_record', 'blockchain_record_id']
-        read_only_fields = ['id', 'created_by', 'created_at', 'updated_at', 'blockchain_record', 'blockchain_record_id']
+                  'created_at', 'updated_at', 'blockchain_record', 'blockchain_record_id', 'email_sent', 'email_status']
+        read_only_fields = ['id', 'created_by', 'created_at', 'updated_at', 'blockchain_record', 'blockchain_record_id', 'email_sent', 'email_status']
+    
+    def get_email_sent(self, obj):
+        """Return whether email was sent during create/update"""
+        return getattr(obj, '_email_sent', False)
+    
+    def get_email_status(self, obj):
+        """Return email status message"""
+        return getattr(obj, '_email_status', 'not_sent')
 
 
 # Import Form model here to avoid circular imports at module import time

@@ -559,7 +559,7 @@ Secure Progress Management System Team
         Request body:
         {
             "username": "john.doe",
-            "email": "john@example.com",
+            "email": "nkeshimanac@nm-aist.ac.tz",
             "first_name": "John",
             "last_name": "Doe",
             "password": "securepass123",

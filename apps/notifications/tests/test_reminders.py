@@ -10,9 +10,9 @@ from apps.schools.models import PresentationType
 class ReminderTests(TestCase):
     def setUp(self):
         # create users
-        self.student = CustomUser.objects.create_user(username='student1', email='nkeshipelagie@gmail.com', password='pass')
-        self.coordinator = CustomUser.objects.create_user(username='coord', email='nkuridiegue@gmail.com', password='pass')
-        self.examiner = CustomUser.objects.create_user(username='exam1', email='dieguecarmel@gmail.com', password='pass')
+        self.student = CustomUser.objects.create_user(username='student1', email='nkeshimanac@nm-aist.ac.tz', password='pass')
+        self.coordinator = CustomUser.objects.create_user(username='coord', email='nkeshimanac@nm-aist.ac.tz', password='pass')
+        self.examiner = CustomUser.objects.create_user(username='exam1', email='nkeshimanac@nm-aist.ac.tz', password='pass')
 
         # minimal presentation request
         # ensure a presentation type exists

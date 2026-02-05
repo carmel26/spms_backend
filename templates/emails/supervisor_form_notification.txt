@@ -1,0 +1,23 @@
+Action Required: Sign Research Progress Form
+============================================
+
+Hello {{ recipient.get_full_name|default:"Supervisor" }},
+
+{{ student_name }} has submitted a Research Progress Report and requires your signature as their supervisor.
+
+PROJECT DETAILS
+---------------
+Title: {{ project_title }}
+Student: {{ student_name }}
+
+ACTION REQUIRED
+---------------
+Please log in to the system to review the report and complete Part B (Supervisor Section) with your digital signature.
+
+Link: {{ frontend_url }}/forms
+
+---
+This message was sent by Secure Progress Management System (SPMS).
+© {% now "Y" %} NM-AIST. All rights reserved.
+
+This is an automated message. Please do not reply to this email.
