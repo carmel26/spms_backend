@@ -1365,3 +1365,57 @@ class FormViewSet(viewsets.ModelViewSet):
 
         return Response(resp_data)
 
+
+class SelfAssessmentViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing Scholar's Self Assessment Progress Reports.
+    
+    This viewset handles CRUD operations for self-assessment forms which 
+    include research objectives, presentations, linkages, and publications tracking.
+    """
+
+    serializer_class = FormSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = PresentationForm.objects.filter(name='self_assessment').select_related('created_by')
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = PresentationForm.objects.filter(name='self_assessment').select_related('created_by')
+        
+        # Admin and coordinator can see all
+        if user.user_groups.filter(name__in=['admin', 'coordinator']).exists():
+            return qs
+        
+        # Others see only their own assessments
+        return qs.filter(created_by=user)
+
+    def perform_create(self, serializer):
+        # Set the form name to 'self_assessment' for filtering
+        instance = serializer.save(
+            created_by=self.request.user,
+            name='self_assessment',
+            form_role='student'
+        )
+
+    def perform_update(self, serializer):
+        serializer.save()
+
+    def create(self, request, *args, **kwargs):
+        """Ensure required Form fields are populated before validation."""
+        mutable = request.data.copy()
+
+        # Map legacy payloads that send `form_type` instead of `name`
+        if not mutable.get('name') and mutable.get('form_type'):
+            mutable['name'] = mutable.get('form_type')
+
+        # Force correct name and role for self-assessments
+        mutable['name'] = 'self_assessment'
+        if not mutable.get('form_role'):
+            mutable['form_role'] = 'student'
+
+        # Ensure `data` is present for the Form serializer
+        if 'data' not in mutable and 'payload' in mutable:
+            mutable['data'] = mutable.get('payload')
+
+        # Rebuild request with updated data
+        request._full_data = mutable
+        return super().create(request, *args, **kwargs)
