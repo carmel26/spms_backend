@@ -8,6 +8,7 @@ from apps.presentations.models import (
 )
 from apps.schools.models import PresentationType
 from apps.users.models import CustomUser, StudentProfile
+from apps.users.serializers import StudentProfileSerializer
 from apps.notifications.utils import send_presentation_submitted_notification, send_supervisor_assignment_notification
 
 
@@ -231,7 +232,9 @@ class ExaminerAssignmentSerializer(serializers.ModelSerializer):
         """Get detailed presentation info including student data for form pre-fill"""
         presentation = obj.assignment.presentation
         student = presentation.student
-        
+        # added testing code
+        student_profile = getattr(student, 'student_profile', None)
+
         # Get student's school and programme names
         school_name = ''
         programme_name = ''
@@ -249,6 +252,15 @@ class ExaminerAssignmentSerializer(serializers.ModelSerializer):
                 'email': supervisor.email
             })
         
+        # Get presentation type info
+        presentation_type_detail = None
+        if presentation.presentation_type:
+            presentation_type_detail = {
+                'id': presentation.presentation_type.id,
+                'name': presentation.presentation_type.name,
+                'programme_type': presentation.presentation_type.programme_type,
+            }
+        
         return {
             'id': presentation.id,
             'research_title': presentation.research_title,
@@ -257,9 +269,14 @@ class ExaminerAssignmentSerializer(serializers.ModelSerializer):
             'student_school': school_name,
             'student_programme': programme_name,
             'proposed_date': presentation.proposed_date,
-            'actual_date': presentation.actual_date or presentation.scheduled_date,  # Fallback to scheduled_date
+            'actual_date': presentation.actual_date or presentation.scheduled_date,
             'status': presentation.status,
-            'supervisors': supervisors
+            'supervisors': supervisors,
+            'presentation_type_detail': presentation_type_detail,
+             'student_profile': (
+            StudentProfileSerializer(student_profile).data
+                if student_profile else None
+            ),
         }
 
 

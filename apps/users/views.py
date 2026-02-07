@@ -519,37 +519,53 @@ Secure Progress Management System Team
     @action(detail=False, methods=['get'])
     def student_dashboard(self, request):
         """Get student dashboard stats"""
-        if not request.user.is_student():
+        is_admin = request.user.is_admin() or request.user.is_superuser
+        if not request.user.is_student() and not is_admin:
             return Response({'error': 'Not a student'}, status=status.HTTP_403_FORBIDDEN)
         
-        student_profile = StudentProfile.objects.filter(user=request.user).first()
-        if not student_profile:
-            return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
-        
-        requests = PresentationRequest.objects.filter(student=request.user)
+        if is_admin:
+            # Admin sees aggregate stats for all students
+            requests = PresentationRequest.objects.all()
+        else:
+            student_profile = StudentProfile.objects.filter(user=request.user).first()
+            if not student_profile:
+                return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
+            requests = PresentationRequest.objects.filter(student=request.user)
         
         return Response({
             'total_requests': requests.count(),
-            'pending_requests': requests.filter(status='pending').count(),
-            'scheduled_presentations': requests.filter(status='approved').count(),
+            'draft_requests': requests.filter(status='draft').count(),
+            'pending_requests': requests.filter(status='submitted').count(),
+            'accepted_requests': requests.filter(status='accepted').count(),
+            'rejected_requests': requests.filter(status='rejected').count(),
+            'scheduled_presentations': requests.filter(status='scheduled').count(),
             'completed_presentations': requests.filter(status='completed').count(),
+            'approved_requests': requests.filter(status='accepted').count(),
         })
     
     @action(detail=False, methods=['get'])
     def supervisor_dashboard(self, request):
         """Get supervisor dashboard stats"""
-        if not request.user.has_role('supervisor'):
+        is_admin = request.user.is_admin() or request.user.is_superuser
+        if not request.user.has_role('supervisor') and not is_admin:
             return Response({'error': 'Not a supervisor'}, status=status.HTTP_403_FORBIDDEN)
         
-        students = StudentProfile.objects.filter(supervisor=request.user)
-        total_students = students.count()
+        if is_admin:
+            # Admin sees all students and all presentation requests
+            students = StudentProfile.objects.all()
+            all_requests = PresentationRequest.objects.all()
+        else:
+            students = StudentProfile.objects.filter(supervisor=request.user)
+            all_requests = PresentationRequest.objects.filter(student__in=students)
         
-        all_requests = PresentationRequest.objects.filter(student__in=students)
+        total_students = students.count()
         
         return Response({
             'total_students': total_students,
-            'pending_presentations': all_requests.filter(status='pending').count(),
-            'scheduled_presentations': all_requests.filter(status='approved').count(),
+            'total_presentations': all_requests.count(),
+            'pending_presentations': all_requests.filter(status='submitted').count(),
+            'accepted_presentations': all_requests.filter(status='accepted').count(),
+            'scheduled_presentations': all_requests.filter(status='scheduled').count(),
             'completed_presentations': all_requests.filter(status='completed').count(),
         })
     @action(detail=False, methods=['post'])
@@ -610,38 +626,45 @@ Secure Progress Management System Team
     @action(detail=False, methods=['get'])
     def coordinator_dashboard(self, request):
         """Get coordinator dashboard stats"""
-        # Check if user has coordinator role
-        if not request.user.has_role('coordinator'):
+        is_admin = request.user.is_admin() or request.user.is_superuser
+        if not request.user.has_role('coordinator') and not is_admin:
             return Response({'error': 'Not a coordinator'}, status=status.HTTP_403_FORBIDDEN)
         
         requests = PresentationRequest.objects.all()
         
         return Response({
-            'pending_requests': requests.filter(status='pending').count(),
-            'assigned_presentations': requests.filter(status='assigned').count(),
-            'scheduled_presentations': requests.filter(status='approved').count(),
+            'total_presentations': requests.count(),
+            'draft_requests': requests.filter(status='draft').count(),
+            'pending_requests': requests.filter(status='submitted').count(),
+            'accepted_presentations': requests.filter(status='accepted').count(),
+            'rejected_presentations': requests.filter(status='rejected').count(),
+            'scheduled_presentations': requests.filter(status='scheduled').count(),
             'completed_presentations': requests.filter(status='completed').count(),
         })
     
     @action(detail=False, methods=['get'])
     def examiner_dashboard(self, request):
         """Get examiner dashboard stats for users with examiner role or evaluate_proposals permission"""
-        # Check if user has examiner role OR evaluate_proposals permission
+        # Check if user has examiner role OR evaluate_proposals permission OR is admin
         has_examiner_role = request.user.has_role('examiner')
         has_evaluate_permission = request.user.has_permission('evaluate_proposals')
+        is_admin = request.user.is_admin() or request.user.is_superuser
         
-        if not has_examiner_role and not has_evaluate_permission:
+        if not has_examiner_role and not has_evaluate_permission and not is_admin:
             return Response({'error': 'Not authorized to view examiner dashboard'}, status=status.HTTP_403_FORBIDDEN)
         
         from apps.presentations.models import Form
         
-        assignments = ExaminerAssignment.objects.filter(examiner=request.user)
-        
-        # Count evaluations submitted by this examiner
-        evaluations = Form.objects.filter(
-            created_by=request.user,
-            name='proposal_evaluation'
-        )
+        if is_admin:
+            # Admin sees all assignments and evaluations across all examiners
+            assignments = ExaminerAssignment.objects.all()
+            evaluations = Form.objects.filter(name='proposal_evaluation')
+        else:
+            assignments = ExaminerAssignment.objects.filter(examiner=request.user)
+            evaluations = Form.objects.filter(
+                created_by=request.user,
+                name='proposal_evaluation'
+            )
         
         # Get IDs of presentations that have been evaluated
         evaluated_presentation_ids = list(evaluations.values_list('presentation_id', flat=True))
@@ -687,11 +710,14 @@ Secure Progress Management System Team
     @action(detail=False, methods=['get'])
     def supervised_students(self, request):
         """Get list of students supervised by current user"""
-        # Check if user has supervisor role
-        if not request.user.has_role('supervisor'):
+        is_admin = request.user.is_admin() or request.user.is_superuser
+        if not request.user.has_role('supervisor') and not is_admin:
             return Response({'error': 'Not a supervisor'}, status=status.HTTP_403_FORBIDDEN)
         
-        students = StudentProfile.objects.filter(supervisor=request.user)
+        if is_admin:
+            students = StudentProfile.objects.all()
+        else:
+            students = StudentProfile.objects.filter(supervisor=request.user)
         from .serializers import StudentProfileDetailSerializer
         serializer = StudentProfileDetailSerializer(students, many=True)
         return Response(serializer.data)

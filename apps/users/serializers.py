@@ -283,14 +283,32 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 class StudentProfileDetailSerializer(serializers.ModelSerializer):
     """Detailed serializer for student profile"""
     supervisor_name = serializers.CharField(source='supervisor.get_full_name', read_only=True)
-    
+    user = serializers.SerializerMethodField()
+    programme = serializers.SerializerMethodField()
+
     class Meta:
         model = StudentProfile
         fields = [
-            'id', 'supervisor', 'supervisor_name',
+            'id', 'user', 'supervisor', 'supervisor_name',
             'admission_year', 'enrollment_year', 'expected_graduation',
-            'programme_level', 'is_admitted', 'is_active_student'
+            'programme_level', 'is_admitted', 'is_active_student', 'programme'
         ]
+
+    def get_user(self, obj):
+        u = obj.user
+        return {
+            'id': u.id,
+            'first_name': u.first_name,
+            'last_name': u.last_name,
+            'email': u.email,
+            'registration_number': u.registration_number,
+        }
+
+    def get_programme(self, obj):
+        prog = obj.user.programme
+        if prog:
+            return {'id': prog.id, 'name': prog.name}
+        return None
 
 
 class LoginSerializer(serializers.Serializer):

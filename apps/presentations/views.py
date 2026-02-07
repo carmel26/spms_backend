@@ -355,20 +355,25 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='my-assignments')
     def my_examiner_assignments(self, request):
-        """Get examiner assignments for the current user"""
+        """Get examiner assignments for the current user (or all for admin)"""
         user = request.user
+        is_admin = user.is_admin() if hasattr(user, 'is_admin') else False
+        is_admin = is_admin or user.is_superuser
         
-        # Check if user is an examiner
-        if not user.user_groups.filter(name='examiner').exists():
+        # Check if user is an examiner or admin
+        if not user.user_groups.filter(name='examiner').exists() and not is_admin:
             return Response(
                 {'detail': 'Only examiners can view their assignments.'}, 
                 status=status.HTTP_403_FORBIDDEN
             )
         
-        # Get all examiner assignments for this user
-        assignments = ExaminerAssignment.objects.filter(
-            examiner=user
-        ).select_related(
+        # Admin sees all assignments; examiners see only their own
+        if is_admin:
+            assignments = ExaminerAssignment.objects.all()
+        else:
+            assignments = ExaminerAssignment.objects.filter(examiner=user)
+        
+        assignments = assignments.select_related(
             'assignment__presentation', 
             'assignment__presentation__student',
             'assignment__presentation__student__school',
