@@ -43,6 +43,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
     examiner_profiles = serializers.SerializerMethodField()
     coordinator_profiles = serializers.SerializerMethodField()
     student_profile = serializers.SerializerMethodField()
+    has_student_profile = serializers.SerializerMethodField()
     
     class Meta:
         model = CustomUser
@@ -52,7 +53,8 @@ class CustomUserSerializer(serializers.ModelSerializer):
             'user_groups', 'user_groups_details', 'roles_display',
             'phone_number', 'registration_number',
             'school', 'programme', 'is_active', 'is_approved', 'approved_date', 
-            'supervisor_profiles', 'examiner_profiles', 'coordinator_profiles', 'student_profile',
+            'supervisor_profiles', 'examiner_profiles', 'coordinator_profiles', 
+            'student_profile', 'has_student_profile',
             'password', 'last_login_date', 'date_created'
         ]
         read_only_fields = ['id', 'date_created', 'last_login_date', 'approved_by', 'roles_display']
@@ -62,12 +64,13 @@ class CustomUserSerializer(serializers.ModelSerializer):
         }
     
     def get_user_groups_details(self, obj):
-        """Get detailed information about user's groups/roles"""
+        """Get detailed information about user's groups/roles including permissions"""
         return [
             {
                 'id': group.id,
                 'name': group.name,
-                'display_name': group.display_name
+                'display_name': group.display_name,
+                'permissions': group.permissions or []
             }
             for group in obj.user_groups.all()
         ]
@@ -96,6 +99,10 @@ class CustomUserSerializer(serializers.ModelSerializer):
         if hasattr(obj, 'student_profile'):
             return StudentProfileSerializer(obj.student_profile).data
         return None
+    
+    def get_has_student_profile(self, obj):
+        """Check if user has a student profile"""
+        return hasattr(obj, 'student_profile') and obj.student_profile is not None
     
     def validate_email(self, value):
         """Ensure email is unique"""

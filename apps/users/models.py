@@ -213,6 +213,29 @@ class CustomUser(AbstractUser):
         """Check if user has a specific role"""
         return self.user_groups.filter(name=role_name).exists()
     
+    def has_permission(self, permission_name):
+        """
+        Check if user has a specific permission through any of their user groups.
+        Permissions are stored in UserGroup.permissions JSONField as a list of permission codenames.
+        """
+        # Superusers have all permissions
+        if self.is_superuser:
+            return True
+        
+        # Check if any of the user's groups have this permission
+        for group in self.user_groups.all():
+            if group.permissions and permission_name in group.permissions:
+                return True
+        return False
+    
+    def get_all_permissions(self):
+        """Get all permissions from all user groups"""
+        permissions = set()
+        for group in self.user_groups.all():
+            if group.permissions:
+                permissions.update(group.permissions)
+        return list(permissions)
+    
     def is_student(self):
         """Check if user is a student"""
         return self.has_role('student')

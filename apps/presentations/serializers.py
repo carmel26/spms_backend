@@ -228,14 +228,38 @@ class ExaminerAssignmentSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'acceptance_date']
     
     def get_presentation_detail(self, obj):
-        """Get basic presentation info"""
+        """Get detailed presentation info including student data for form pre-fill"""
         presentation = obj.assignment.presentation
+        student = presentation.student
+        
+        # Get student's school and programme names
+        school_name = ''
+        programme_name = ''
+        if student.school:
+            school_name = student.school.name
+        if student.programme:
+            programme_name = student.programme.name
+        
+        # Get supervisors
+        supervisors = []
+        for supervisor in presentation.supervisors.all():
+            supervisors.append({
+                'id': supervisor.id,
+                'name': supervisor.get_full_name(),
+                'email': supervisor.email
+            })
+        
         return {
             'id': presentation.id,
             'research_title': presentation.research_title,
-            'student_name': presentation.student.get_full_name(),
+            'student_name': student.get_full_name(),
+            'student_registration_number': student.registration_number or '',
+            'student_school': school_name,
+            'student_programme': programme_name,
             'proposed_date': presentation.proposed_date,
-            'status': presentation.status
+            'actual_date': presentation.actual_date or presentation.scheduled_date,  # Fallback to scheduled_date
+            'status': presentation.status,
+            'supervisors': supervisors
         }
 
 
@@ -278,3 +302,15 @@ class ExaminerChangeHistorySerializer(serializers.ModelSerializer):
         fields = ['id', 'presentation', 'presentation_title', 'changed_by', 'changed_by_detail',
                   'previous_examiners_detail', 'new_examiners_detail', 'change_reason', 'changed_at']
         read_only_fields = ['id', 'changed_at']
+
+
+# Import PhdAssessmentItem model for serializer
+from apps.presentations.models import PhdAssessmentItem
+
+class PhdAssessmentItemSerializer(serializers.ModelSerializer):
+    """Serializer for PhD Assessment Items"""
+    
+    class Meta:
+        model = PhdAssessmentItem
+        fields = ['id', 'sn', 'description', 'max_score', 'is_active', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']

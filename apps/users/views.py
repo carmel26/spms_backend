@@ -625,18 +625,47 @@ Secure Progress Management System Team
     
     @action(detail=False, methods=['get'])
     def examiner_dashboard(self, request):
-        """Get examiner dashboard stats"""
-        # Check if user has examiner role
-        if not request.user.has_role('examiner'):
-            return Response({'error': 'Not an examiner'}, status=status.HTTP_403_FORBIDDEN)
+        """Get examiner dashboard stats for users with examiner role or evaluate_proposals permission"""
+        # Check if user has examiner role OR evaluate_proposals permission
+        has_examiner_role = request.user.has_role('examiner')
+        has_evaluate_permission = request.user.has_permission('evaluate_proposals')
+        
+        if not has_examiner_role and not has_evaluate_permission:
+            return Response({'error': 'Not authorized to view examiner dashboard'}, status=status.HTTP_403_FORBIDDEN)
+        
+        from apps.presentations.models import Form
         
         assignments = ExaminerAssignment.objects.filter(examiner=request.user)
         
+        # Count evaluations submitted by this examiner
+        evaluations = Form.objects.filter(
+            created_by=request.user,
+            name='proposal_evaluation'
+        )
+        
+        # Get IDs of presentations that have been evaluated
+        evaluated_presentation_ids = list(evaluations.values_list('presentation_id', flat=True))
+        
+        # Get accepted assignments
+        accepted_assignments = assignments.filter(status='accepted')
+        
+        # Count pending evaluations by checking which accepted assignments haven't been evaluated
+        pending_evaluations = 0
+        for assignment in accepted_assignments:
+            presentation_id = assignment.assignment.presentation_id
+            if presentation_id not in evaluated_presentation_ids:
+                pending_evaluations += 1
+        
+        # Completed evaluations count
+        completed_evaluations = evaluations.count()
+        
         return Response({
-            'pending_assignments': assignments.filter(status='pending').count(),
-            'accepted_assignments': assignments.filter(status='accepted').count(),
+            'pending_assignments': assignments.filter(status='assigned').count(),
+            'accepted_assignments': accepted_assignments.count(),
             'declined_assignments': assignments.filter(status='declined').count(),
-            'completed_assessments': 0,
+            'completed_assessments': completed_evaluations,
+            'pending_evaluations': pending_evaluations,
+            'total_evaluations': completed_evaluations,
         })
     
     @action(detail=False, methods=['get'])
@@ -703,6 +732,57 @@ class StudentProfileViewSet(viewsets.ModelViewSet):
     queryset = StudentProfile.objects.all()
     serializer_class = StudentProfileSerializer
     permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['post'], url_path='create-my-profile')
+    def create_my_profile(self, request):
+        """Allow a student to create their own profile"""
+        user = request.user
+        
+        # Check if user is a student
+        if not user.user_groups.filter(name='student').exists():
+            return Response(
+                {'detail': 'Only students can create a student profile.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Check if profile already exists
+        if StudentProfile.objects.filter(user=user).exists():
+            return Response(
+                {'detail': 'You already have a student profile.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate required fields
+        required_fields = ['programme_level', 'admission_year', 'enrollment_year', 'expected_graduation']
+        for field in required_fields:
+            if field not in request.data:
+                return Response(
+                    {'detail': f'{field} is required.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        # Create profile
+        try:
+            profile = StudentProfile.objects.create(
+                user=user,
+                programme_level=request.data.get('programme_level', 'masters'),
+                admission_year=request.data.get('admission_year'),
+                enrollment_year=request.data.get('enrollment_year'),
+                expected_graduation=request.data.get('expected_graduation'),
+                supervisor_id=request.data.get('supervisor') if request.data.get('supervisor') else None,
+                is_active_student=True,
+                is_admitted=True  # Auto-admit since they completed their profile
+            )
+            
+            return Response(
+                StudentProfileSerializer(profile).data,
+                status=status.HTTP_201_CREATED
+            )
+        except Exception as e:
+            return Response(
+                {'detail': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
 
 class UserGroupViewSet(viewsets.ModelViewSet):

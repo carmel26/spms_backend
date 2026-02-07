@@ -20,6 +20,7 @@ from apps.presentations.serializers import (
     ExaminerAssignmentSerializer,
     ExaminerChangeHistorySerializer,
     FormSerializer,
+    PhdAssessmentItemSerializer,
 )
 from apps.schools.models import PresentationType
 from apps.users.models import CustomUser, StudentProfile
@@ -34,6 +35,7 @@ from apps.notifications.utils import (
 
 from rest_framework import permissions
 from apps.presentations.models import Form as PresentationForm
+from apps.presentations.models import PhdAssessmentItem
 
 
 class IsOwnerOrCoordinator(permissions.BasePermission):
@@ -272,6 +274,7 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
             try:
                 parsed_dt = parser.parse(scheduled_date)
                 presentation.scheduled_date = parsed_dt
+                presentation.actual_date = parsed_dt  # Also set actual_date for evaluation forms
                 presentation.status = 'scheduled'
 
                 # Create or update a PresentationSchedule so schedule-related flows persist
@@ -365,7 +368,13 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
         # Get all examiner assignments for this user
         assignments = ExaminerAssignment.objects.filter(
             examiner=user
-        ).select_related('assignment__presentation', 'examiner')
+        ).select_related(
+            'assignment__presentation', 
+            'assignment__presentation__student',
+            'assignment__presentation__student__school',
+            'assignment__presentation__student__programme',
+            'examiner'
+        ).prefetch_related('assignment__presentation__supervisors')
         
         serializer = ExaminerAssignmentSerializer(assignments, many=True)
         return Response(serializer.data)
@@ -1419,3 +1428,220 @@ class SelfAssessmentViewSet(viewsets.ModelViewSet):
         # Rebuild request with updated data
         request._full_data = mutable
         return super().create(request, *args, **kwargs)
+
+
+class ProposalEvaluationViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing Master's Research Proposal Evaluation Forms.
+    
+    This viewset handles CRUD operations for proposal evaluation forms which 
+    are filled by examiners to assess research proposals.
+    
+    Permission: Only users with 'evaluate_proposals' permission or examiners can access.
+    """
+
+    serializer_class = FormSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = PresentationForm.objects.filter(name='proposal_evaluation').select_related('created_by')
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = PresentationForm.objects.filter(name='proposal_evaluation').select_related('created_by')
+        
+        # Admin can see all
+        if user.user_groups.filter(name='admin').exists():
+            return qs
+        
+        # Coordinator can see all
+        if user.user_groups.filter(name='coordinator').exists():
+            return qs
+        
+        # Users with evaluate_proposals permission can see their own
+        # Check if user has evaluate_proposals permission in any of their groups
+        user_groups = user.user_groups.all()
+        has_permission = False
+        for group in user_groups:
+            perms = group.permissions or []
+            if 'evaluate_proposals' in perms:
+                has_permission = True
+                break
+        
+        # Examiners and those with permission see only their own evaluations
+        if user.user_groups.filter(name='examiner').exists() or has_permission:
+            return qs.filter(created_by=user)
+        
+        # Others see nothing
+        return qs.none()
+
+    def perform_create(self, serializer):
+        # Set the form name to 'proposal_evaluation' for filtering
+        instance = serializer.save(
+            created_by=self.request.user,
+            name='proposal_evaluation',
+            form_role='examiner'
+        )
+
+    def perform_update(self, serializer):
+        serializer.save()
+
+    def create(self, request, *args, **kwargs):
+        """Ensure required Form fields are populated before validation."""
+        mutable = request.data.copy()
+
+        # Force correct name and role for proposal evaluations
+        mutable['name'] = 'proposal_evaluation'
+        if not mutable.get('form_role'):
+            mutable['form_role'] = 'examiner'
+
+        # Ensure `data` is present for the Form serializer
+        if 'data' not in mutable and 'payload' in mutable:
+            mutable['data'] = mutable.get('payload')
+
+        # Rebuild request with updated data
+        request._full_data = mutable
+        return super().create(request, *args, **kwargs)
+
+
+class PhdProposalEvaluationViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing PhD Research Proposal Evaluation Forms.
+    
+    This viewset handles CRUD operations for PhD proposal evaluation forms which 
+    are filled by examiners to assess PhD research proposals.
+    
+    Permission: Only users with 'evaluate_phd_proposals' permission or examiners can access.
+    """
+
+    serializer_class = FormSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = PresentationForm.objects.filter(name='phd_proposal_evaluation').select_related('created_by')
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = PresentationForm.objects.filter(name='phd_proposal_evaluation').select_related('created_by')
+        
+        # Admin can see all
+        if user.user_groups.filter(name='admin').exists():
+            return qs
+        
+        # Coordinator can see all
+        if user.user_groups.filter(name='coordinator').exists():
+            return qs
+        
+        # Users with evaluate_phd_proposals permission can see their own
+        # Check if user has evaluate_phd_proposals permission in any of their groups
+        user_groups = user.user_groups.all()
+        has_permission = False
+        for group in user_groups:
+            perms = group.permissions or []
+            if 'evaluate_phd_proposals' in perms:
+                has_permission = True
+                break
+        
+        # Examiners and those with permission see only their own evaluations
+        if user.user_groups.filter(name='examiner').exists() or has_permission:
+            return qs.filter(created_by=user)
+        
+        # Others see nothing
+        return qs.none()
+
+    def perform_create(self, serializer):
+        # Set the form name to 'phd_proposal_evaluation' for filtering
+        instance = serializer.save(
+            created_by=self.request.user,
+            name='phd_proposal_evaluation',
+            form_role='examiner'
+        )
+
+    def perform_update(self, serializer):
+        serializer.save()
+
+    def create(self, request, *args, **kwargs):
+        """Ensure required Form fields are populated before validation."""
+        mutable = request.data.copy()
+
+        # Force correct name and role for PhD proposal evaluations
+        mutable['name'] = 'phd_proposal_evaluation'
+        if not mutable.get('form_role'):
+            mutable['form_role'] = 'examiner'
+
+        # Ensure `data` is present for the Form serializer
+        if 'data' not in mutable and 'payload' in mutable:
+            mutable['data'] = mutable.get('payload')
+
+        # Rebuild request with updated data
+        request._full_data = mutable
+        return super().create(request, *args, **kwargs)
+
+
+class PhdAssessmentItemViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing PhD Assessment Items.
+    
+    This viewset allows admins to manage the assessment criteria items
+    used in PhD Research Proposal Evaluation Forms.
+    
+    - GET /phd-assessment-items/ - List all items (filtered by is_active for non-admins)
+    - GET /phd-assessment-items/?all=true - List all items including inactive (admin only)
+    - POST /phd-assessment-items/ - Create new item (admin only)
+    - PUT /phd-assessment-items/{id}/ - Update item (admin only)
+    - DELETE /phd-assessment-items/{id}/ - Delete item (admin only)
+    """
+    
+    serializer_class = PhdAssessmentItemSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = PhdAssessmentItem.objects.all()
+        
+        # Admin can see all items (always, for CRUD operations)
+        if user.user_groups.filter(name='admin').exists():
+            return queryset
+        
+        # Non-admins only see active items
+        return queryset.filter(is_active=True)
+    
+    def check_admin_permission(self):
+        """Check if user is admin for write operations"""
+        user = self.request.user
+        if not user.user_groups.filter(name='admin').exists():
+            return Response(
+                {'error': 'Only administrators can modify assessment items'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return None
+    
+    def create(self, request, *args, **kwargs):
+        """Create a new assessment item (admin only)"""
+        permission_error = self.check_admin_permission()
+        if permission_error:
+            return permission_error
+        return super().create(request, *args, **kwargs)
+    
+    def update(self, request, *args, **kwargs):
+        """Update an assessment item (admin only)"""
+        permission_error = self.check_admin_permission()
+        if permission_error:
+            return permission_error
+        return super().update(request, *args, **kwargs)
+    
+    def partial_update(self, request, *args, **kwargs):
+        """Partially update an assessment item (admin only)"""
+        permission_error = self.check_admin_permission()
+        if permission_error:
+            return permission_error
+        return super().partial_update(request, *args, **kwargs)
+    
+    def destroy(self, request, *args, **kwargs):
+        """Delete an assessment item (admin only)"""
+        permission_error = self.check_admin_permission()
+        if permission_error:
+            return permission_error
+        return super().destroy(request, *args, **kwargs)
+    
+    @action(detail=False, methods=['get'])
+    def total_score(self, request):
+        """Get the total maximum score of all active assessment items"""
+        from django.db.models import Sum
+        total = PhdAssessmentItem.objects.filter(is_active=True).aggregate(
+            total=Sum('max_score')
+        )['total'] or 0
+        return Response({'total_max_score': total})

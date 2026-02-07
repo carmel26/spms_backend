@@ -363,3 +363,34 @@ class Form(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.form_role}) - {self.created_by.get_full_name()}"
+
+
+class PhdAssessmentItem(models.Model):
+    """Assessment criteria items for PhD Research Proposal Evaluation Form.
+    
+    These items define the evaluation criteria used by examiners to assess
+    PhD research proposals. Admin can manage these items through the settings.
+    """
+    
+    sn = models.PositiveIntegerField(
+        help_text='Serial number/order of the assessment item'
+    )
+    description = models.TextField(
+        help_text='Description of the assessment criteria'
+    )
+    max_score = models.PositiveIntegerField(
+        help_text='Maximum score for this assessment item'
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text='Whether this item is currently active'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'phd_assessment_items'
+        ordering = ['sn']
+    
+    def __str__(self):
+        return f"{self.sn}. {self.description[:50]}... (Max: {self.max_score})"
