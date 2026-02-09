@@ -1,200 +1,72 @@
-from rest_framework import viewsets, status
+from django.db.models import Q
+from django.utils import timezone
+from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.utils import timezone
-import datetime
+
 from .models import Notification, NotificationPreference
 from .serializers import NotificationSerializer, NotificationPreferenceSerializer
-from django.db.models import Q
-from django.utils.dateformat import format as dateformat
-from apps.presentations.models import (
-    PresentationRequest,
-    PresentationAssignment,
-    SupervisorAssignment,
-    ExaminerAssignment,
-    PresentationSchedule,
-)
-from django.shortcuts import get_object_or_404
-from .utils import send_presentation_time_reminder
 
 
-class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    ViewSet for notifications - shows notifications for all authenticated users
-    """
+class NotificationPreferenceViewSet(viewsets.ModelViewSet):
+    queryset = NotificationPreference.objects.all()
+    serializer_class = NotificationPreferenceSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Return only preferences for the logged-in user
+        return self.queryset.filter(user=self.request.user)
+
+
+class NotificationViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = NotificationSerializer
-    
+
     def get_queryset(self):
-        """
-        Return notifications for the current authenticated user
-        """
-        user = self.request.user
-        
-        # Return notifications for this user
-        return Notification.objects.filter(
-            recipient=user
-        ).select_related('presentation', 'related_user').order_by('-created_at')
+        return (
+            Notification.objects
+            .filter(
+                recipient=self.request.user,
+                is_archived=False
+            )
+            .select_related('recipient', 'related_user', 'content_type')
+            .order_by('-created_at')
+        )
 
-    @action(detail=False, methods=['get'])
-    def aggregated_from_presentations(self, request):
-        """Aggregate notification-like items from presentation-related tables.
-
-        Returns a flat list of simple dicts with keys: id, label, created_at,
-        category, to_user_id, attached (presentation id), status.
-        """
-        user = request.user
-        now = timezone.now()
-        items = []
-
-        # Presentation requests (target the student primarily)
-        prs = PresentationRequest.objects.exclude(status='draft').select_related('presentation_type', 'student')
-        for pr in prs:
-            items.append({
-                'id': f'presentation_request:{pr.id}',
-                'label': str(pr),
-                'created_at': pr.created_at.isoformat() if getattr(pr, 'created_at', None) else None,
-                'category': 'presentation_request',
-                'to_user_id': pr.student.id if pr.student else None,
-                'attached': {'presentation_id': pr.id, 'presentation_type': getattr(pr.presentation_type, 'name', None)},
-                'status': pr.status,
-            })
-
-        # Presentation assignments (coordinators)
-        pas = PresentationAssignment.objects.select_related('coordinator', 'presentation')
-        for pa in pas:
-            items.append({
-                'id': f'presentation_assignment:{pa.id}',
-                'label': f'Assignment for {pa.presentation.id}',
-                'created_at': pa.created_at.isoformat() if getattr(pa, 'created_at', None) else None,
-                'category': 'presentation_assignment',
-                'to_user_id': pa.coordinator.id if pa.coordinator else None,
-                'attached': {'presentation_id': pa.presentation.id},
-                'status': None,
-            })
-
-        # Supervisor assignments
-        sas = SupervisorAssignment.objects.select_related('supervisor', 'assignment__presentation')
-        for sa in sas:
-            items.append({
-                'id': f'supervisor_assignment:{sa.id}',
-                'label': f'Supervisor assignment for {sa.assignment.presentation.id}',
-                'created_at': sa.acceptance_date.isoformat() if getattr(sa, 'acceptance_date', None) else None,
-                'category': 'supervisor_assignment',
-                'to_user_id': sa.supervisor.id if sa.supervisor else None,
-                'attached': {'presentation_id': sa.assignment.presentation.id, 'assignment_id': sa.assignment.id},
-                'status': sa.status,
-            })
-
-        # Examiner assignments
-        eas = ExaminerAssignment.objects.select_related('examiner', 'assignment__presentation')
-        for ea in eas:
-            items.append({
-                'id': f'examiner_assignment:{ea.id}',
-                'label': f'Examiner assignment for {ea.assignment.presentation.id}',
-                'created_at': ea.acceptance_date.isoformat() if getattr(ea, 'acceptance_date', None) else None,
-                'category': 'examiner_assignment',
-                'to_user_id': ea.examiner.id if ea.examiner else None,
-                'attached': {'presentation_id': ea.assignment.presentation.id, 'assignment_id': ea.assignment.id},
-                'status': ea.status,
-            })
-
-        # Presentation schedules (upcoming or recent)
-        schedules = PresentationSchedule.objects.filter(start_time__gte=(now - datetime.timedelta(days=1))).select_related('presentation')
-        for s in schedules:
-            # Notify the student for the schedule
-            student = getattr(s.presentation, 'student', None)
-            items.append({
-                'id': f'presentation_schedule:{s.id}',
-                'label': f'Schedule for {s.presentation.id} at {s.start_time.isoformat()}',
-                'created_at': s.start_time.isoformat() if getattr(s, 'start_time', None) else None,
-                'category': 'presentation_schedule',
-                'to_user_id': student.id if student else None,
-                'attached': {'presentation_id': s.presentation.id, 'start_time': s.start_time.isoformat()},
-                'status': None,
-            })
-
-        # Filter items addressed to current user (or return all for staff)
-        if not user.is_staff:
-            items = [it for it in items if it.get('to_user_id') == user.id]
-
-        # Order by created_at descending when possible
-        def sort_key(it):
-            ca = it.get('created_at')
-            return ca or ''
-
-        items.sort(key=sort_key, reverse=True)
-
-        return Response({'items': items})
-    
     @action(detail=False, methods=['get'])
     def unread_count(self, request):
-        """Get count of unread notifications for current user"""
-        count = self.get_queryset().filter(is_read=False).count()
-        return Response({'unread_count': count})
-    
+        return Response({
+            'unread_count': self.get_queryset().filter(is_read=False).count()
+        })
+
     @action(detail=True, methods=['post'])
     def mark_read(self, request, pk=None):
-        """Mark a notification as read"""
         notification = self.get_object()
         notification.mark_as_read()
-        return Response({'status': 'notification marked as read'})
-    
+        return Response({'status': 'ok'})
+
     @action(detail=False, methods=['post'])
     def mark_all_read(self, request):
-        """Mark all notifications as read for current user"""
         updated = self.get_queryset().filter(is_read=False).update(
             is_read=True,
             read_at=timezone.now()
         )
-        return Response({'status': f'{updated} notifications marked as read'})
+        return Response({'updated': updated})
 
+    @action(detail=False, methods=['get'])
+    def aggregated_from_presentations(self, request):
+        # Simply return all notifications for this user
+        notifications = self.get_queryset()
+        serializer = self.get_serializer(notifications, many=True)
+        return Response(serializer.data)
 
-class NotificationPreferenceViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet for notification preferences - for all users
-    """
-    permission_classes = [IsAuthenticated]
-    serializer_class = NotificationPreferenceSerializer
-    
-    def get_queryset(self):
-        """
-        Return preferences only for student users
-        """
-        user = self.request.user
-        
-        # Check if user has student profile
-        if not hasattr(user, 'studentprofile'):
-            return NotificationPreference.objects.none()
-        
-        return NotificationPreference.objects.filter(user=user)
-
-
-
+# --------
 class SendReminderView(APIView):
-    """API endpoint for coordinators/admins to trigger a reminder for a presentation."""
     permission_classes = [IsAuthenticated]
 
-    def post(self, request, *args, **kwargs):
-        presentation_id = request.data.get('presentation_id')
-        minutes = int(request.data.get('minutes', 15))
-
-        if not presentation_id:
-            return Response({'detail': 'presentation_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-        presentation = get_object_or_404(PresentationRequest, id=presentation_id)
-
-        # Allow if user is staff or the assigned coordinator
-        user = request.user
-        is_coordinator = PresentationAssignment.objects.filter(presentation=presentation, coordinator=user).exists()
-        if not (user.is_staff or is_coordinator):
-            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-
-        try:
-            send_presentation_time_reminder(presentation, minutes_before=minutes)
-            return Response({'detail': f'Reminder invoked for presentation {presentation_id} (minutes_before={minutes})'})
-        except Exception as e:
-            return Response({'detail': 'Failed to invoke reminder', 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+    def post(self, request):
+        # Example: trigger reminders for all presentations starting soon
+        send_presentation_time_reminder()
+        return Response({"status": "reminders sent"})

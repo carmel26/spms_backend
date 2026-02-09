@@ -1,127 +1,109 @@
 from django.db import models
 from django.utils import timezone
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
+from apps.presentations.models import PresentationRequest
 
 
 class Notification(models.Model):
-    """Notification model for all users"""
-    
+    """
+    Global notification model that can reference ANY backend model
+    (presentations, profiles, assessments, system events, etc.)
+    """
+
     NOTIFICATION_TYPE_CHOICES = (
         ('presentation_request', 'Presentation Request'),
         ('presentation_accepted', 'Presentation Accepted'),
         ('presentation_declined', 'Presentation Declined'),
         ('examiner_assignment', 'Examiner Assignment'),
         ('date_changed', 'Presentation Date Changed'),
-        ('time_warning', 'Time Warning - Presentation Starting Soon'),
+        ('time_warning', 'Presentation Starting Soon'),
         ('assessment_submitted', 'Assessment Submitted'),
         ('new_profile', 'New Profile Awaiting Approval'),
         ('profile_approved', 'Profile Approved'),
         ('profile_rejected', 'Profile Rejected'),
-        ('system_message', 'System Message'),
         ('presentation_completed', 'Presentation Completed'),
+        ('system_message', 'System Message'),
     )
-    
+
+ 
     recipient = models.ForeignKey(
         'users.CustomUser',
         on_delete=models.CASCADE,
         related_name='notifications'
     )
-    notification_type = models.CharField(max_length=50, choices=NOTIFICATION_TYPE_CHOICES)
+
+    notification_type = models.CharField(
+        max_length=50,
+        choices=NOTIFICATION_TYPE_CHOICES
+    )
     title = models.CharField(max_length=255)
     message = models.TextField()
-    
-    # Related objects
-    presentation = models.ForeignKey(
-        'presentations.PresentationRequest',
+
+    content_type = models.ForeignKey(
+        ContentType,
         on_delete=models.CASCADE,
         null=True,
-        blank=True,
-        related_name='notifications'
+        blank=True
     )
+    object_id = models.PositiveIntegerField(null=True, blank=True)
+    content_object = GenericForeignKey('content_type', 'object_id')
+
+  
     related_user = models.ForeignKey(
         'users.CustomUser',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='user_notifications'
+        related_name='triggered_notifications'
     )
-    
-    # Status
+
+
+    action_url = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="Angular route to open when user clicks 'See more'"
+    )
+
     is_read = models.BooleanField(default=False)
     read_at = models.DateTimeField(null=True, blank=True)
-    
-    # Metadata
+    is_archived = models.BooleanField(default=False)
+ 
+    priority = models.IntegerField(
+        default=0,
+        help_text="Higher number = higher priority"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
-    priority = models.IntegerField(default=0, help_text="Higher number = higher priority")
-    
+
     class Meta:
         db_table = 'notifications'
-        ordering = ['-created_at']
+        ordering = ['-priority', '-created_at']
         indexes = [
             models.Index(fields=['recipient', 'is_read']),
+            models.Index(fields=['recipient', 'is_archived']),
         ]
-    
+
     def __str__(self):
-        return f"{self.title} - {self.recipient.username}"
-    
+        return f"{self.title} → {self.recipient.username}"
+
     def mark_as_read(self):
-        """Mark notification as read"""
-        self.is_read = True
-        self.read_at = timezone.now()
-        self.save()
-
-
-class NotificationPreference(models.Model):
-    """User notification preferences"""
-    
-    user = models.OneToOneField(
-        'users.CustomUser',
-        on_delete=models.CASCADE,
-        related_name='notification_preference'
-    )
-    
-    # Notification channels
-    email_notifications = models.BooleanField(default=True)
-    in_app_notifications = models.BooleanField(default=True)
-    sms_notifications = models.BooleanField(default=False)
-    
-    # Notification types
-    notify_presentation_request = models.BooleanField(default=True)
-    notify_examiner_assignment = models.BooleanField(default=True)
-    notify_date_changes = models.BooleanField(default=True)
-    notify_time_warnings = models.BooleanField(default=True)
-    notify_assessment_submitted = models.BooleanField(default=True)
-    notify_new_profiles = models.BooleanField(default=True)
-    
-    # Time warning (minutes before presentation)
-    time_warning_minutes = models.IntegerField(default=30)
-    
-    # Do not disturb
-    quiet_hours_enabled = models.BooleanField(default=False)
-    quiet_hours_start = models.TimeField(null=True, blank=True)
-    quiet_hours_end = models.TimeField(null=True, blank=True)
-    
-    updated_at = models.DateTimeField(auto_now=True)
-    
-    class Meta:
-        db_table = 'notification_preferences'
-    
-    def __str__(self):
-        return f"Preferences for {self.user.username}"
+        """Mark notification as read safely"""
+        if not self.is_read:
+            self.is_read = True
+            self.read_at = timezone.now()
+            self.save(update_fields=['is_read', 'read_at'])
 
 
 class ReminderLog(models.Model):
-    """Log of reminder attempts for presentations"""
-    recipient = models.ForeignKey(
-        'users.CustomUser', on_delete=models.CASCADE, related_name='reminder_logs'
-    )
-    presentation = models.ForeignKey(
-        'presentations.PresentationRequest', on_delete=models.CASCADE, related_name='reminder_logs'
-    )
-    minutes_before = models.IntegerField(default=15)
-    channel = models.CharField(max_length=32, choices=(('email', 'Email'), ('in_app', 'In App')),
-                               default='email')
-    status = models.CharField(max_length=32, choices=(('sent', 'Sent'), ('failed', 'Failed')),
-                              default='sent')
+    """
+    Logs reminders sent to users about presentations.
+    """
+    recipient = models.ForeignKey('users.CustomUser', on_delete=models.CASCADE)
+    presentation = models.ForeignKey(PresentationRequest, on_delete=models.CASCADE)
+    minutes_before = models.IntegerField()
+    channel = models.CharField(max_length=20, help_text="Email or in-app")
+    status = models.CharField(max_length=20, default='sent', help_text="sent or failed")
     error = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -130,4 +112,19 @@ class ReminderLog(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"Reminder {self.presentation.id} -> {self.recipient.username} ({self.minutes_before}m) [{self.status}]"
+        return f"Reminder {self.channel} → {self.recipient.username} for {self.presentation}"
+
+
+class NotificationPreference(models.Model):
+    user = models.OneToOneField('users.CustomUser', on_delete=models.CASCADE)
+    email_notifications = models.BooleanField(default=True)
+    in_app_notifications = models.BooleanField(default=True)
+    sms_notifications = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'notification_preferences'
+
+    def __str__(self):
+        return f"Preferences for {self.user.username}"
