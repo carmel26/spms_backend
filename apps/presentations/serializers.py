@@ -197,7 +197,7 @@ class PresentationRequestSerializer(serializers.ModelSerializer):
         if supervisors is not None:
             # Determine newly added supervisors and notify them
             previous_ids = set(instance.supervisors.values_list('id', flat=True))
-            new_ids = set([s.id if hasattr(s, 'id') else int(s) for s in supervisors]) - previous_ids
+            new_ids = set([s.id if hasattr(s, 'id') else s for s in supervisors]) - previous_ids
             instance.supervisors.set(supervisors)
 
             try:
@@ -283,7 +283,7 @@ class ExaminerAssignmentSerializer(serializers.ModelSerializer):
 class FormSerializer(serializers.ModelSerializer):
     """Serializer for the Form model that stores JSON payloads."""
     created_by_detail = BasicUserSerializer(source='created_by', read_only=True)
-    blockchain_record_id = serializers.IntegerField(source='blockchain_record.id', read_only=True)
+    blockchain_record_id = serializers.CharField(source='blockchain_record.id', read_only=True)
     email_sent = serializers.SerializerMethodField()
     email_status = serializers.SerializerMethodField()
 

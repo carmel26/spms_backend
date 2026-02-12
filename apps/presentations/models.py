@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.core.validators import FileExtensionValidator
 from django.utils import timezone
@@ -6,6 +8,7 @@ from datetime import timedelta
 
 class PresentationRequest(models.Model):
     """Model for student presentation requests"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     STATUS_CHOICES = (
         ('draft', 'Draft'),
@@ -106,6 +109,7 @@ class PresentationRequest(models.Model):
 
 class PresentationAssignment(models.Model):
     """Assignments of coordinators and examiners to presentations"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     presentation = models.OneToOneField(
         PresentationRequest,
@@ -149,6 +153,7 @@ class PresentationAssignment(models.Model):
 
 class SupervisorAssignment(models.Model):
     """Assignment of supervisors to presentations"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     STATUS_CHOICES = (
         ('assigned', 'Assigned'),
@@ -184,6 +189,7 @@ class SupervisorAssignment(models.Model):
 
 class ExaminerAssignment(models.Model):
     """Assignment of examiners to presentations"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     STATUS_CHOICES = (
         ('assigned', 'Assigned'),
@@ -219,6 +225,7 @@ class ExaminerAssignment(models.Model):
 
 class PresentationSchedule(models.Model):
     """Schedule details for a presentation"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     presentation = models.OneToOneField(
         PresentationRequest,
@@ -249,6 +256,7 @@ class PresentationSchedule(models.Model):
 
 class ExaminerChangeHistory(models.Model):
     """History of examiner changes for audit trail"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     presentation = models.ForeignKey(
         PresentationRequest,
@@ -285,6 +293,7 @@ class ExaminerChangeHistory(models.Model):
 
 class PresentationAssessment(models.Model):
     """Assessment/feedback from examiners"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     GRADE_CHOICES = (
         ('A', 'Excellent'),
@@ -320,6 +329,7 @@ class Form(models.Model):
     This model is linked optionally to a `PresentationRequest` and to the
     `BlockchainRecord` for tamper-evident storage when required.
     """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     ROLE_CHOICES = (
         ('student', 'Student'),
@@ -371,6 +381,7 @@ class PhdAssessmentItem(models.Model):
     These items define the evaluation criteria used by examiners to assess
     PhD research proposals. Admin can manage these items through the settings.
     """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     sn = models.PositiveIntegerField(
         help_text='Serial number/order of the assessment item'

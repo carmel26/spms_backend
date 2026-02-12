@@ -292,8 +292,7 @@ Secure Progress Management System
                     presentations_to_process = [last_req]
             else:
                 try:
-                    pid = int(presentation_id)
-                    pr = PresentationRequest.objects.filter(id=pid).first()
+                    pr = PresentationRequest.objects.filter(id=presentation_id).first()
                     if pr:
                         presentations_to_process = [pr]
                 except Exception:

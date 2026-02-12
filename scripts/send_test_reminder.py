@@ -14,12 +14,12 @@ minutes = int(os.environ.get('MINUTES', '1'))
 
 if pid:
     try:
-        p = PresentationRequest.objects.get(id=int(pid))
+        p = PresentationRequest.objects.get(id=pid)
     except PresentationRequest.DoesNotExist:
         print(f"No presentation found with id {pid}")
         p = None
 else:
-    p = PresentationRequest.objects.order_by('-id').first()
+    p = PresentationRequest.objects.order_by('-created_at').first()
 
 if not p:
     print('No presentation found; exiting.')

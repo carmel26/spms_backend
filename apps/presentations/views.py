@@ -666,13 +666,13 @@ class FormViewSet(viewsets.ModelViewSet):
         if is_supervisor or is_dean:
             try:
                 from django.db.models import Q
-                uid = int(user.id)
+                uid = str(user.id)
                 q = Q()
                 
                 if is_supervisor:
                     # Forms where user is assigned as supervisor
                     q |= Q(created_by=user)
-                    q |= Q(presentation__supervisors__id=uid)
+                    q |= Q(presentation__supervisors__id=user.id)
                     
                     # JSONField lookups for supervisor assignment
                     try:
@@ -685,7 +685,7 @@ class FormViewSet(viewsets.ModelViewSet):
                         pass
                     try:
                         # sometimes stored as string
-                        q |= Q(data__selected_supervisor__contains=str(uid))
+                        q |= Q(data__selected_supervisor__contains=uid)
                     except Exception:
                         pass
                 
@@ -740,7 +740,7 @@ class FormViewSet(viewsets.ModelViewSet):
                 ids = sel if isinstance(sel, list) else [sel]
                 for sid in ids:
                     try:
-                        sup = CustomUser.objects.get(id=int(sid))
+                        sup = CustomUser.objects.get(id=sid)
                         logger.info(f'✓ Found supervisor: {sup.get_full_name()} (ID: {sup.id}, Email: {sup.email})')
                     except Exception as e:
                         logger.warning(f'✗ Could not find supervisor with ID {sid}: {e}')
@@ -881,7 +881,7 @@ class FormViewSet(viewsets.ModelViewSet):
                 
                 for sid in ids:
                     try:
-                        sup = CustomUser.objects.get(id=int(sid))
+                        sup = CustomUser.objects.get(id=sid)
                         logger.info(f'Found supervisor: {sup.get_full_name()} ({sup.email})')
                     except Exception as e:
                         logger.warning(f'Could not find supervisor with ID {sid}: {e}')
@@ -1056,7 +1056,7 @@ class FormViewSet(viewsets.ModelViewSet):
         Response includes metadata indicating the user's role(s) for each form.
         """
         user = request.user
-        uid = int(user.id)
+        uid = str(user.id)
         
         # Check if user is supervisor
         is_supervisor = user.user_groups.filter(name='supervisor').exists()
@@ -1084,12 +1084,12 @@ class FormViewSet(viewsets.ModelViewSet):
             # Forms where user is assigned as supervisor
             try:
                 # Check linked presentation supervisors
-                supervisor_q |= Q(presentation__supervisors__id=uid)
+                supervisor_q |= Q(presentation__supervisors__id=user.id)
                 
                 # Check JSON data fields for supervisor assignment
                 supervisor_q |= Q(data__selected_supervisors__contains=[uid])
                 supervisor_q |= Q(data__selected_supervisor=uid)
-                supervisor_q |= Q(data__selected_supervisor__contains=str(uid))
+                supervisor_q |= Q(data__selected_supervisor__contains=uid)
             except Exception:
                 pass
         
@@ -1140,7 +1140,7 @@ class FormViewSet(viewsets.ModelViewSet):
                         
                         if isinstance(selected_sups, list) and uid in selected_sups:
                             is_assigned_supervisor = True
-                        elif selected_sup and int(selected_sup) == uid:
+                        elif selected_sup and str(selected_sup) == uid:
                             is_assigned_supervisor = True
                         elif form.presentation and form.presentation.supervisors.filter(id=uid).exists():
                             is_assigned_supervisor = True
@@ -1207,26 +1207,19 @@ class FormViewSet(viewsets.ModelViewSet):
             candidate_ids = set()
 
             def extract_id(x):
-                # Try several ways to extract an integer id from x
+                # Try several ways to extract an id (UUID string) from x
                 try:
                     if x is None:
                         return None
-                    if isinstance(x, int):
-                        return int(x)
                     if isinstance(x, str):
-                        # attempt to parse an integer inside the string
-                        import re
-                        m = re.search(r"(\d+)", x)
-                        if m:
-                            return int(m.group(1))
-                        return None
+                        return x.strip() or None
+                    if isinstance(x, int):
+                        # legacy integer id — convert to string
+                        return str(x)
                     if isinstance(x, dict):
                         for k in ('id', 'value', 'user_id', 'supervisor_id'):
                             if k in x and x[k] is not None:
-                                try:
-                                    return int(x[k])
-                                except Exception:
-                                    continue
+                                return str(x[k])
                         return None
                 except Exception:
                     return None
@@ -1252,14 +1245,14 @@ class FormViewSet(viewsets.ModelViewSet):
                 try:
                     pres = last_preq
                     for sup in pres.supervisors.all():
-                        candidate_ids.add(int(sup.id))
+                        candidate_ids.add(str(sup.id))
                 except Exception:
                     pres = last_preq
             elif getattr(last, 'presentation', None):
                 try:
                     pres = last.presentation
                     for sup in pres.supervisors.all():
-                        candidate_ids.add(int(sup.id))
+                        candidate_ids.add(str(sup.id))
                 except Exception:
                     pres = last.presentation
 
@@ -1281,10 +1274,9 @@ class FormViewSet(viewsets.ModelViewSet):
             try:
                 ls = data.get('selected_supervisor') or data.get('selected') or data.get('selected_supervisors')
                 if isinstance(ls, list) and ls:
-                    last_selected = int(ls[-1])
+                    last_selected = str(ls[-1])
                 elif ls is not None:
-                    # try to coerce
-                    last_selected = int(ls)
+                    last_selected = str(ls)
             except Exception:
                 last_selected = None
 
@@ -1346,21 +1338,14 @@ class FormViewSet(viewsets.ModelViewSet):
                 if isinstance(sel, list):
                     for v in sel:
                         try:
-                            ids.append(int(v))
+                            ids.append(str(v))
                         except Exception:
                             continue
                 else:
                     try:
-                        ids.append(int(sel))
+                        ids.append(str(sel))
                     except Exception:
-                        # sometimes the id may be embedded in a string like "user:12"
-                        import re
-                        m = re.search(r"(\d+)", str(sel))
-                        if m:
-                            try:
-                                ids.append(int(m.group(1)))
-                            except Exception:
-                                pass
+                        pass
 
             # If we found any ids, query and serialize those users
             if ids:

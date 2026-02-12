@@ -316,48 +316,136 @@ def send_session_moderator_assignment_notification(moderator, session, assigned_
 
 def send_presentation_time_reminder(presentation_request, minutes_before=30):
     """
-    Send a reminder notification to the student that their presentation is starting soon.
-    Also logs the reminder in ReminderLog.
+    Send a reminder notification AND email to a single recipient (the student).
+    Kept for backward-compatibility; prefer send_presentation_reminders_to_all_actors().
+    """
+    return _send_reminder_to_recipient(
+        presentation_request,
+        recipient=presentation_request.student,
+        role_label='Presenter',
+        minutes_before=minutes_before,
+    )
+
+
+def send_presentation_reminders_to_all_actors(presentation_request, minutes_before=30):
+    """
+    Send reminder notifications + emails to **all** actors linked to this
+    presentation: student, supervisors, session moderator, and examiners.
+    """
+    results = []
+
+    # 1. Student (presenter)
+    results.append(
+        _send_reminder_to_recipient(
+            presentation_request,
+            recipient=presentation_request.student,
+            role_label='Presenter',
+            minutes_before=minutes_before,
+        )
+    )
+
+    # 2. Supervisors (from assignment)
+    try:
+        assignment = presentation_request.assignment
+        for sa in assignment.supervisor_assignments.select_related('supervisor').all():
+            results.append(
+                _send_reminder_to_recipient(
+                    presentation_request,
+                    recipient=sa.supervisor,
+                    role_label='Supervisor',
+                    minutes_before=minutes_before,
+                )
+            )
+    except Exception:
+        logger.debug('No assignment / supervisors for presentation %s', presentation_request.id)
+
+    # 3. Session moderator
+    try:
+        moderator = presentation_request.assignment.session_moderator
+        if moderator:
+            results.append(
+                _send_reminder_to_recipient(
+                    presentation_request,
+                    recipient=moderator,
+                    role_label='Session Moderator',
+                    minutes_before=minutes_before,
+                )
+            )
+    except Exception:
+        logger.debug('No moderator for presentation %s', presentation_request.id)
+
+    # 4. Examiners (from assignment)
+    try:
+        assignment = presentation_request.assignment
+        for ea in assignment.examiner_assignments.select_related('examiner').all():
+            results.append(
+                _send_reminder_to_recipient(
+                    presentation_request,
+                    recipient=ea.examiner,
+                    role_label='Examiner',
+                    minutes_before=minutes_before,
+                )
+            )
+    except Exception:
+        logger.debug('No examiners for presentation %s', presentation_request.id)
+
+    return results
+
+
+# ---- internal helper to avoid duplication ----
+def _send_reminder_to_recipient(presentation_request, recipient, role_label, minutes_before):
+    """
+    Create an in-app notification, log the reminder, and send an email to ONE
+    recipient using the ``presentation_reminder`` template.
     """
     title = "Presentation Starting Soon"
-    message = f"Your presentation '{presentation_request.research_title}' will start in {minutes_before} minutes."
+    message = (
+        f"The presentation '{presentation_request.research_title}' "
+        f"will start in {minutes_before} minutes.  You are listed as: {role_label}."
+    )
 
-    # Create notification
-    notification = create_notification_for_user(
-        recipient=presentation_request.student,
+    # In-app notification (uses create_notification directly so it works for
+    # non-student recipients too — create_notification_for_user guards on
+    # studentprofile which staff don't have).
+    notification = create_notification(
+        recipient=recipient,
         title=title,
         message=message,
         notification_type='time_warning',
-        obj=presentation_request
+        obj=presentation_request,
     )
 
-    # Log reminder
+    # Reminder log
     ReminderLog.objects.create(
-        recipient=presentation_request.student,
+        recipient=recipient,
         presentation=presentation_request,
         minutes_before=minutes_before,
-        channel='in_app',
-        status='sent'
+        channel='email',
+        status='sent',
     )
 
-    # Optional: send email reminder using the system template
+    # Email (best-effort)
     try:
         _send_email(
-            recipient=presentation_request.student,
+            recipient=recipient,
             subject=title,
             message=message,
             template_prefix='presentation_reminder',
             context={
                 'presentation': presentation_request,
-                'recipient': presentation_request.student,
-                'role_label': 'Presenter',
+                'recipient': recipient,
+                'role_label': role_label,
                 'minutes_before': minutes_before,
                 'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
-                'honorific': _get_honorific(presentation_request.student)
-            }
+                'honorific': _get_honorific(recipient),
+            },
         )
     except Exception:
-        logger.exception('Failed to send presentation reminder email for presentation id %s', getattr(presentation_request, 'id', None))
+        logger.exception(
+            'Failed to send presentation reminder email for presentation id %s to %s',
+            getattr(presentation_request, 'id', None),
+            getattr(recipient, 'email', None),
+        )
 
     return notification
 

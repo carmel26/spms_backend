@@ -1,8 +1,11 @@
+import uuid
+
 from django.db import models
 
 
 class School(models.Model):
     """School/Faculty Model"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     name = models.CharField(max_length=255, unique=True)
     abbreviation = models.CharField(max_length=50, unique=True)
@@ -31,6 +34,7 @@ class School(models.Model):
 
 class Programme(models.Model):
     """Study Programme/Course Model"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     PROGRAMME_TYPE_CHOICES = (
         ('masters', 'Masters'),
@@ -65,6 +69,7 @@ class Programme(models.Model):
 
 class PresentationType(models.Model):
     """Types of presentations (e.g., Progress, Final Seminar)"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)

@@ -38,7 +38,7 @@ if not sel:
     sys.exit(1)
 
 try:
-    sup = CustomUser.objects.get(id=int(sel))
+    sup = CustomUser.objects.get(id=sel)
     print(f"\n✓ Supervisor: {sup.get_full_name()}")
     print(f"  Email: {sup.email}")
     

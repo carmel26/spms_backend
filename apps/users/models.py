@@ -1,7 +1,7 @@
 """
 Models for Users app - All user roles and authentication
 """
-
+import uuid
 from django.db import models
 from django.contrib.auth.models import AbstractUser, UserManager
 from django.core.validators import MinLengthValidator
@@ -10,6 +10,7 @@ import hashlib
 
 class UserGroup(models.Model):
     """User groups/roles table for better normalization"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     name = models.CharField(
         max_length=50,
@@ -94,6 +95,7 @@ class CustomUserManager(UserManager):
 
 class CustomUser(AbstractUser):
     """Extended User model with multiple roles support via ManyToMany relationship"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     # Override email field to make it unique and required
     email = models.EmailField(
@@ -276,6 +278,7 @@ class CustomUser(AbstractUser):
 
 class SystemSettings(models.Model):
     """System-wide settings stored in database"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     # General Settings
     system_name = models.CharField(
@@ -335,12 +338,15 @@ class SystemSettings(models.Model):
     @classmethod
     def get_settings(cls):
         """Get or create settings instance (singleton pattern)"""
-        settings, created = cls.objects.get_or_create(pk=1)
+        settings = cls.objects.first()
+        if settings is None:
+            settings = cls.objects.create()
         return settings
 
 
 class StudentProfile(models.Model):
     """Extended profile for students - Only students can have this profile"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     user = models.OneToOneField(
         CustomUser,
@@ -380,6 +386,7 @@ class StudentProfile(models.Model):
 
 class SupervisorProfile(models.Model):
     """Metadata for users with supervisor role - Can be multiple roles per user"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     user = models.ForeignKey(
         CustomUser,
@@ -401,6 +408,7 @@ class SupervisorProfile(models.Model):
 
 class CoordinatorProfile(models.Model):
     """Metadata for users with coordinator role - Can be multiple roles per user"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     user = models.ForeignKey(
         CustomUser,
@@ -424,6 +432,7 @@ class CoordinatorProfile(models.Model):
 
 class ExaminerProfile(models.Model):
     """Metadata for users with examiner role - Can be multiple roles per user"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     user = models.ForeignKey(
         CustomUser,
@@ -444,6 +453,7 @@ class ExaminerProfile(models.Model):
 
 class PasswordReset(models.Model):
     """Model to track password reset requests"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
     token = models.CharField(max_length=255, unique=True)
@@ -457,6 +467,7 @@ class PasswordReset(models.Model):
 
 class AuditLog(models.Model):
     """Comprehensive audit log for all operations in the system"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     ACTION_CHOICES = (
         ('CREATE', 'Create'),

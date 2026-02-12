@@ -39,7 +39,7 @@ print(f"\n  Current selected_supervisor in data: {current_supervisor_id}")
 
 if current_supervisor_id:
     try:
-        current_sup = CustomUser.objects.get(id=int(current_supervisor_id))
+        current_sup = CustomUser.objects.get(id=current_supervisor_id)
         print(f"  📧 Email WILL be sent to: {current_sup.get_full_name()} ({current_sup.email})")
     except:
         print(f"  ❌ Supervisor ID {current_supervisor_id} not found!")

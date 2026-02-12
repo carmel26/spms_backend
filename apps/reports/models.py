@@ -1,8 +1,11 @@
+import uuid
+
 from django.db import models
 
 
 class Report(models.Model):
     """Report model for various dashboard reports"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     REPORT_TYPE_CHOICES = (
         ('student_progress', 'Student Progress Report'),
@@ -41,6 +44,7 @@ class Report(models.Model):
 
 class DashboardWidget(models.Model):
     """Dashboard widgets for user dashboards"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     WIDGET_TYPE_CHOICES = (
         ('progress_chart', 'Progress Chart'),
@@ -90,6 +94,7 @@ class DashboardWidget(models.Model):
 
 class Audit(models.Model):
     """System audit log"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     ACTION_CHOICES = (
         ('create', 'Create'),
@@ -111,7 +116,7 @@ class Audit(models.Model):
     )
     action = models.CharField(max_length=50, choices=ACTION_CHOICES)
     resource_type = models.CharField(max_length=100)
-    resource_id = models.BigIntegerField(null=True, blank=True)
+    resource_id = models.CharField(max_length=36, null=True, blank=True)
     details = models.TextField(blank=True)
     
     ip_address = models.GenericIPAddressField(null=True, blank=True)

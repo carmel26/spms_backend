@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 import hashlib
 import json
@@ -6,6 +8,7 @@ from datetime import datetime
 
 class BlockchainRecord(models.Model):
     """Model to store blockchain records for tamper-proof data"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     RECORD_TYPE_CHOICES = (
         ('user_creation', 'User Creation'),
@@ -114,6 +117,7 @@ class BlockchainRecord(models.Model):
 
 class SmartContract(models.Model):
     """Model for smart contracts related to presentations"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     CONTRACT_TYPE_CHOICES = (
         ('presentation_rules', 'Presentation Rules'),

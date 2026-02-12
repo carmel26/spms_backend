@@ -44,7 +44,7 @@ try:
     if sel:
         from apps.users.models import CustomUser
         try:
-            sup = CustomUser.objects.get(id=int(sel))
+            sup = CustomUser.objects.get(id=sel)
             print(f"\n✓ Supervisor found: {sup.get_full_name()} ({sup.email})")
         except Exception as e:
             print(f"\n✗ Supervisor NOT found: {e}")

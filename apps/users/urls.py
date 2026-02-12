@@ -25,6 +25,6 @@ urlpatterns = [
     path('examiner_dashboard/', views.UserViewSet.as_view({'get': 'examiner_dashboard'}), name='user-examiner-dashboard'),
     path('admission_dashboard/', views.UserViewSet.as_view({'get': 'admission_dashboard'}), name='user-admission-dashboard'),
     path('admin_dashboard/', views.UserViewSet.as_view({'get': 'admin_dashboard'}), name='user-admin-dashboard'),
-    path('<int:pk>/approve/', views.UserViewSet.as_view({'post': 'approve'}), name='user-approve'),
-    path('<int:pk>/reject/', views.UserViewSet.as_view({'post': 'reject'}), name='user-reject'),
+    path('<str:pk>/approve/', views.UserViewSet.as_view({'post': 'approve'}), name='user-approve'),
+    path('<str:pk>/reject/', views.UserViewSet.as_view({'post': 'reject'}), name='user-reject'),
 ]

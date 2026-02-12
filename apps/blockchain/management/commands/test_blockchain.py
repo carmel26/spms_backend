@@ -21,7 +21,7 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             '--audit',
-            type=int,
+            type=str,
             help='Show audit trail for presentation ID',
         )
 

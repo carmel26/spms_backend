@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.utils import timezone
 from django.contrib.contenttypes.fields import GenericForeignKey
@@ -10,6 +12,7 @@ class Notification(models.Model):
     Global notification model that can reference ANY backend model
     (presentations, profiles, assessments, system events, etc.)
     """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     NOTIFICATION_TYPE_CHOICES = (
         ('presentation_request', 'Presentation Request'),
@@ -46,7 +49,7 @@ class Notification(models.Model):
         null=True,
         blank=True
     )
-    object_id = models.PositiveIntegerField(null=True, blank=True)
+    object_id = models.CharField(max_length=36, null=True, blank=True)
     content_object = GenericForeignKey('content_type', 'object_id')
 
   
@@ -99,6 +102,7 @@ class ReminderLog(models.Model):
     """
     Logs reminders sent to users about presentations.
     """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     recipient = models.ForeignKey('users.CustomUser', on_delete=models.CASCADE)
     presentation = models.ForeignKey(PresentationRequest, on_delete=models.CASCADE)
     minutes_before = models.IntegerField()
@@ -116,6 +120,7 @@ class ReminderLog(models.Model):
 
 
 class NotificationPreference(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField('users.CustomUser', on_delete=models.CASCADE)
     email_notifications = models.BooleanField(default=True)
     in_app_notifications = models.BooleanField(default=True)
