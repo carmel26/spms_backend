@@ -340,6 +340,25 @@ def send_presentation_time_reminder(presentation_request, minutes_before=30):
         status='sent'
     )
 
+    # Optional: send email reminder using the system template
+    try:
+        _send_email(
+            recipient=presentation_request.student,
+            subject=title,
+            message=message,
+            template_prefix='presentation_reminder',
+            context={
+                'presentation': presentation_request,
+                'recipient': presentation_request.student,
+                'role_label': 'Presenter',
+                'minutes_before': minutes_before,
+                'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
+                'honorific': _get_honorific(presentation_request.student)
+            }
+        )
+    except Exception:
+        logger.exception('Failed to send presentation reminder email for presentation id %s', getattr(presentation_request, 'id', None))
+
     return notification
 
 # -------------------------------
@@ -347,6 +366,7 @@ def send_presentation_time_reminder(presentation_request, minutes_before=30):
 # -------------------------------
 def _send_email(recipient, subject, message, template_prefix=None, context=None):
     try:
+        logger.debug('Preparing email: recipient=%s subject=%s template=%s', getattr(recipient, 'email', None), subject, template_prefix)
         html_body = None
         text_body = message
 
@@ -363,10 +383,15 @@ def _send_email(recipient, subject, message, template_prefix=None, context=None)
         from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'no-reply@spms.edu')
         to_emails = [recipient.email] if getattr(recipient, 'email', None) else []
 
-        if to_emails:
-            msg = EmailMultiAlternatives(subject, text_body, from_email, to_emails)
-            if html_body:
-                msg.attach_alternative(html_body, 'text/html')
-            msg.send(fail_silently=False)
+        if not to_emails:
+            logger.warning('Not sending email: recipient has no email address (recipient=%s)', getattr(recipient, 'id', None))
+            return
+
+        logger.debug('Email from=%s to=%s; html_body=%s text_body_len=%d', from_email, to_emails, bool(html_body), len(text_body or ''))
+        msg = EmailMultiAlternatives(subject, text_body, from_email, to_emails)
+        if html_body:
+            msg.attach_alternative(html_body, 'text/html')
+        msg.send(fail_silently=False)
+        logger.info('Email sent to %s subject=%s', to_emails, subject)
     except Exception as e:
         logger.exception('Failed to send email to %s: %s', getattr(recipient, 'email', None), e)

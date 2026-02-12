@@ -238,6 +238,7 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 
+
 # Celery beat schedule: run reminders every minute to pick up presentations
 from celery.schedules import schedule
 
@@ -267,7 +268,7 @@ EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
 EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
 EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-DEFAULT_FROM_EMAIL = config('EMAIL_HOST_USER', default='noreply@example.com')
+DEFAULT_FROM_EMAIL = config('EMAIL_HOST_USER', default='carmelnkeshimana2020@gmail.com')
 
 # Custom User Model
 AUTH_USER_MODEL = 'users.CustomUser'
