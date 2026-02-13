@@ -44,14 +44,18 @@ echo "6. Migrating users app (creates user_groups tables)..."
 python manage.py migrate users
 
 if [ $? -ne 0 ]; then
-    echo "WARNING: Users migration failed. Checking if tables exist..."
+    echo "WARNING: Users migration failed. Checking database state..."
     python manage.py dbshell <<EOF
 SHOW TABLES LIKE '%users%';
 EOF
     
     echo ""
-    echo "Attempting to fake problematic migrations..."
+    echo "Faking problematic migrations that drop non-existent columns..."
     python manage.py migrate users 0009 --fake
+    python manage.py migrate users 0010 --fake
+    python manage.py migrate users 0011 --fake
+    
+    echo "Retrying users migration..."
     python manage.py migrate users
 fi
 
