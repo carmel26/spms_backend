@@ -26,7 +26,7 @@ class BlockchainManager:
         record_data = {
             'operation': operation,
             'model': model_instance.__class__.__name__,
-            'model_id': model_instance.pk,
+            'model_id': str(model_instance.pk),
             'timestamp': str(timezone.now()),
             'data': serialize_model_data(model_instance)
         }
@@ -134,8 +134,9 @@ def serialize_model_data(instance):
             if hasattr(value, 'isoformat'):  # DateTime fields
                 data[field_name] = value.isoformat()
             elif hasattr(value, 'pk'):  # Foreign keys
+                # Convert related PKs to strings to ensure JSON serializability
                 data[field_name] = {
-                    'id': value.pk,
+                    'id': str(value.pk),
                     'str': str(value)
                 }
             elif isinstance(value, (list, dict)):

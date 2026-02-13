@@ -44,7 +44,7 @@ class UserViewSet(viewsets.ModelViewSet):
         
         # Capture user data before deletion
         deleted_data = {
-            'id': instance.id,
+            'id': str(instance.id),
             'username': instance.username,
             'email': instance.email,
             'first_name': instance.first_name,
@@ -875,7 +875,7 @@ class UserGroupViewSet(viewsets.ModelViewSet):
         
         # Capture data before deletion for audit log
         deleted_data = {
-            'id': instance.id,
+            'id': str(instance.id),
             'name': instance.name,
             'display_name': instance.display_name,
             'description': instance.description or 'N/A',

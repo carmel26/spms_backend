@@ -64,7 +64,7 @@ class NotificationSerializer(serializers.ModelSerializer):
         return {
             'type': obj.content_type.model,     # e.g. "presentationrequest"
             'app': obj.content_type.app_label,  # e.g. "presentations"
-            'id': obj.object_id
+            'id': str(obj.object_id)
         }
 
 class NotificationPreferenceSerializer(serializers.ModelSerializer):

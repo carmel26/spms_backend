@@ -98,6 +98,39 @@ class PresentationRequest(models.Model):
     blockchain_hash = models.CharField(max_length=256, blank=True, null=True)
     blockchain_timestamp = models.DateTimeField(null=True, blank=True)
     
+    # Moderator validation fields
+    moderator_validation_status = models.CharField(
+        max_length=20,
+        choices=[('pending', 'Pending'), ('approved', 'Approved'), ('did_not_take_place', 'Did Not Take Place')],
+        default='pending',
+        blank=True,
+        null=True,
+        help_text="Moderator's validation decision: approved (presentation took place) or did_not_take_place"
+    )
+    moderator_validation_comments = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Moderator's comments on the validation"
+    )
+    moderator_validated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the moderator validated this presentation"
+    )
+    moderator_validated_by = models.ForeignKey(
+        'users.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='validated_presentations',
+        help_text="Moderator who validated this presentation"
+    )
+    moderator_validation_count = models.IntegerField(
+        default=0,
+        help_text="Number of times moderator has validated this presentation. "
+                 "After 2 validations, only admin or dean can modify."
+    )
+    
     class Meta:
         db_table = 'presentation_requests'
         ordering = ['-created_at']

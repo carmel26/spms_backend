@@ -70,28 +70,43 @@ class SendReminderView(APIView):
 
     def post(self, request):
         """
-        Manually trigger reminders for presentations starting within `minutes`
-        (default 15). Sends to ALL actors (student, supervisors, moderator,
-        examiners).  Checks both PresentationSchedule.start_time and
-        PresentationRequest.actual_date.
+        Manually trigger reminders.
+
+        If `presentation_id` is provided, force-send reminders for that
+        specific presentation regardless of its scheduled time.
+
+        Otherwise fall back to the time-window sweep (presentations
+        starting within `minutes` from now).
         """
+        presentation_id = request.data.get('presentation_id')
         minutes = request.data.get('minutes', 15)
         try:
             minutes = int(minutes)
         except Exception:
             minutes = 15
 
+        # ---- Force-send for a specific presentation ----
+        if presentation_id:
+            try:
+                pr = PresentationRequest.objects.select_related('student').get(id=presentation_id)
+            except PresentationRequest.DoesNotExist:
+                return Response(
+                    {"detail": "Presentation not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            send_presentation_reminders_to_all_actors(pr, minutes_before=minutes)
+            return Response({"status": "reminders sent", "count": 1})
+
+        # ---- Fallback: time-window sweep ----
         now = timezone.now()
         window_start = now + timezone.timedelta(minutes=minutes)
         window_end = window_start + timezone.timedelta(seconds=59)
 
-        # Collect from schedule
         schedule_pr_ids = list(
             PresentationSchedule.objects
             .filter(start_time__gte=window_start, start_time__lt=window_end)
             .values_list('presentation_id', flat=True)
         )
-        # Collect from actual_date
         actual_pr_ids = list(
             PresentationRequest.objects
             .filter(actual_date__gte=window_start, actual_date__lt=window_end)

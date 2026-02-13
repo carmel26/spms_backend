@@ -24,7 +24,7 @@ class BasicUserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
     def get_full_name(self, obj):
-        # Get the title if present
+        # Get the title if present (human-readable display value)
         title = obj.get_title_display() if obj.title else ''
         # Get first and last name
         first_name = obj.first_name or ''
@@ -38,7 +38,7 @@ class BasicUserSerializer(serializers.ModelSerializer):
             # Add title before name
             name = f"{title} {first_name} {last_name}".strip()
         else:
-            # No title
+            # No title, just first and last name
             name = f"{first_name} {last_name}".strip()
         
         return name or obj.username
@@ -55,7 +55,7 @@ class PresentationRequestSerializer(serializers.ModelSerializer):
     presentation_type_detail = PresentationTypeSerializer(source='presentation_type', read_only=True)
     supervisors_detail = BasicUserSerializer(source='supervisors', many=True, read_only=True)
     proposed_examiners_detail = BasicUserSerializer(source='proposed_examiners', many=True, read_only=True)
-    student_name = serializers.CharField(source='student.get_full_name', read_only=True)
+    student_name = serializers.CharField(source='student.get_full_name_with_title', read_only=True)
     assignment = serializers.SerializerMethodField()
 
     supervisors = serializers.PrimaryKeyRelatedField(
@@ -86,21 +86,21 @@ class PresentationRequestSerializer(serializers.ModelSerializer):
             examiner_assignments = assignment.examiner_assignments.all()
             supervisor_assignments = assignment.supervisor_assignments.all()
             return {
-                'id': assignment.id,
+                'id': str(assignment.id),
                 'meeting_link': assignment.meeting_link,
                 'venue': assignment.venue,
-                'session_moderator_id': assignment.session_moderator.id if assignment.session_moderator else None,
+                'session_moderator_id': str(assignment.session_moderator.id) if assignment.session_moderator else None,
                 'session_moderator': BasicUserSerializer(assignment.session_moderator).data if assignment.session_moderator else None,
                 'supervisor_assignments': [{
-                    'id': sa.id,
-                    'supervisor': sa.supervisor.id,
+                    'id': str(sa.id),
+                    'supervisor': str(sa.supervisor.id),
                     'supervisor_detail': BasicUserSerializer(sa.supervisor).data,
                     'status': sa.status,
                     'decline_reason': sa.decline_reason
                 } for sa in supervisor_assignments],
                 'examiner_assignments': [{
-                    'id': ea.id,
-                    'examiner': ea.examiner.id,
+                    'id': str(ea.id),
+                    'examiner': str(ea.examiner.id),
                     'examiner_detail': BasicUserSerializer(ea.examiner).data,
                     'status': ea.status,
                     'decline_reason': ea.decline_reason
@@ -247,8 +247,8 @@ class ExaminerAssignmentSerializer(serializers.ModelSerializer):
         supervisors = []
         for supervisor in presentation.supervisors.all():
             supervisors.append({
-                'id': supervisor.id,
-                'name': supervisor.get_full_name(),
+                'id': str(supervisor.id),
+                'name': supervisor.get_full_name_with_title(),
                 'email': supervisor.email
             })
         
@@ -256,15 +256,15 @@ class ExaminerAssignmentSerializer(serializers.ModelSerializer):
         presentation_type_detail = None
         if presentation.presentation_type:
             presentation_type_detail = {
-                'id': presentation.presentation_type.id,
+                'id': str(presentation.presentation_type.id),
                 'name': presentation.presentation_type.name,
                 'programme_type': presentation.presentation_type.programme_type,
             }
         
         return {
-            'id': presentation.id,
+            'id': str(presentation.id),
             'research_title': presentation.research_title,
-            'student_name': student.get_full_name(),
+            'student_name': student.get_full_name_with_title(),
             'student_registration_number': student.registration_number or '',
             'student_school': school_name,
             'student_programme': programme_name,

@@ -1,9 +1,10 @@
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.presentations.models import (
     PresentationRequest, 
@@ -36,6 +37,7 @@ from apps.notifications.utils import (
 from rest_framework import permissions
 from apps.presentations.models import Form as PresentationForm
 from apps.presentations.models import PhdAssessmentItem
+from django.db.models import Prefetch
 
 
 class IsOwnerOrCoordinator(permissions.BasePermission):
@@ -172,7 +174,7 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
             'supervisors': BasicUserSerializer(supervisors, many=True).data,
             'examiners': BasicUserSerializer(examiners, many=True).data,
             'existing_requests': PresentationRequestSerializer(existing_requests, many=True, context=self.get_serializer_context()).data,
-            'student_supervisor_id': profile.supervisor.id if profile.supervisor else None
+            'student_supervisor_id': str(profile.supervisor.id) if profile.supervisor else None
         })
 
     @action(detail=True, methods=['post'], url_path='confirm-examiners')
@@ -568,7 +570,7 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
         
         return Response({
             'message': f'Assessment {action_text} successfully. {status_message}',
-            'assessment_id': assessment.id,
+            'assessment_id': str(assessment.id),
             'presentation_status': presentation.status,
             'all_completed': all_examiners_completed
         })
@@ -629,7 +631,7 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
         
         return Response({
             'message': 'Presentation marked as viewed.',
-            'presentation_id': presentation.id
+            'presentation_id': str(presentation.id)
         })
 
 
@@ -764,11 +766,11 @@ class FormViewSet(viewsets.ModelViewSet):
                                     logger = logging.getLogger(__name__)
                                     
                                     # Get student name and project title from form data
-                                    student_name = data.get('student_full_name', instance.created_by.get_full_name())
+                                    student_name = data.get('student_full_name', instance.created_by.get_full_name_with_title())
                                     project_title = data.get('research_title', 'Research Progress Report')
                                     
                                     title = f'Action Required: Sign Form for {student_name}'
-                                    message = f'Dear {sup.get_full_name()},\n\n{student_name} has submitted a Research Progress Report for the project "{project_title}".\n\nYou are requested to log in to the system, review the report, and complete Part B (Supervisor Section) with your signature.\n\nPlease log in at your earliest convenience to complete this task.\n\nThank you.'
+                                    message = f'Dear {sup.get_full_name_with_title()},\n\n{student_name} has submitted a Research Progress Report for the project "{project_title}".\n\nYou are requested to log in to the system, review the report, and complete Part B (Supervisor Section) with your signature.\n\nPlease log in at your earliest convenience to complete this task.\n\nThank you.'
                                     context = {
                                         'presentation': None,
                                         'recipient': sup,
@@ -782,7 +784,7 @@ class FormViewSet(viewsets.ModelViewSet):
                                     logger.info('📧 Rendering email templates (FORM CREATE) with context:')
                                     logger.info(f'  - Student: {student_name}')
                                     logger.info(f'  - Project: {project_title}')
-                                    logger.info(f'  - Recipient: {sup.get_full_name()}')
+                                    logger.info(f'  - Recipient: {sup.get_full_name_with_title()}')
                                     logger.info(f'  - Role: Supervisor')
                                     
                                     try:
@@ -898,11 +900,11 @@ class FormViewSet(viewsets.ModelViewSet):
                                 from django.template.loader import render_to_string
                                 from django.core.mail import EmailMultiAlternatives
                                 
-                                student_name = data.get('student_full_name', instance.created_by.get_full_name())
+                                student_name = data.get('student_full_name', instance.created_by.get_full_name_with_title())
                                 project_title = data.get('research_title', 'Research Progress Report')
                                 
                                 title = f'Action Required: Sign Form for {student_name}'
-                                message = f'Dear {sup.get_full_name()},\n\n{student_name} has submitted a Research Progress Report for the project "{project_title}".\n\nPlease log in to complete Part B (Supervisor Section).\n\nThank you.'
+                                message = f'Dear {sup.get_full_name_with_title()},\n\n{student_name} has submitted a Research Progress Report for the project "{project_title}".\n\nPlease log in to complete Part B (Supervisor Section).\n\nThank you.'
                                 
                                 context = {
                                     'presentation': None,
@@ -978,13 +980,13 @@ class FormViewSet(viewsets.ModelViewSet):
                             
                             # Send notification to dean
                             try:
-                                from apps.notifications.models import Notification
-                                Notification.objects.create(
-                                    user=dean,
+                                from apps.notifications.utils import create_notification
+                                create_notification(
+                                    recipient=dean,
+                                    title='Action Required: Dean Response',
                                     message=f'Action required: Complete Part C (Dean Response) for {data.get("student_full_name", "a student")}\'s Research Progress Report.',
                                     notification_type='form_assignment',
-                                    related_object_id=instance.id,
-                                    related_content_type='form'
+                                    obj=instance,
                                 )
                                 logger.info(f'Notification sent to dean {dean.username} for form {instance.id}')
                             except Exception as notif_err:
@@ -1283,7 +1285,7 @@ class FormViewSet(viewsets.ModelViewSet):
             # Serialize and return
             response = {
                 'presentation': {
-                    'id': pres.id,
+                    'id': str(pres.id),
                     'research_title': getattr(pres, 'research_title', '')
                 } if pres is not None else None,
                 'supervisors': BasicUserSerializer(users_qs, many=True).data,
@@ -1635,3 +1637,866 @@ class PhdAssessmentItemViewSet(viewsets.ModelViewSet):
             total=Sum('max_score')
         )['total'] or 0
         return Response({'total_max_score': total})
+
+
+class SupervisorStudentsView(APIView):
+    """View for supervisors to see all their students, reports, and progress"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        user = request.user
+        page = int(request.GET.get('page', 1))
+        page_size = int(request.GET.get('page_size', 10))
+        
+        # Get all presentations where the user is a supervisor
+        supervised_presentations = PresentationRequest.objects.filter(
+            supervisors=user
+        ).select_related(
+            'student', 
+            'presentation_type', 
+            'assignment',
+            'student__student_profile',
+            'student__school',
+            'student__programme'
+        ).prefetch_related(
+            'assignment__examiner_assignments__examiner',
+            'assignment__supervisor_assignments'
+        ).order_by('-created_at')
+        
+        # Group by student
+        students_dict = {}
+        for presentation in supervised_presentations:
+            student = presentation.student
+            student_id = str(student.id)
+            
+            if student_id not in students_dict:
+                # Get student profile info
+                student_profile = getattr(student, 'student_profile', None)
+                programme_level = student_profile.programme_level if student_profile else 'unknown'
+                school_name = student.school.name if student.school else ''
+                programme_name = student.programme.name if student.programme else ''
+                
+                # Get total presentations and completed count for this student's programme level
+                if programme_level in ['phd', 'masters']:
+                    # Count all presentations for this student in their programme level
+                    all_student_presentations = PresentationRequest.objects.filter(
+                        student=student,
+                        presentation_type__programme_type__in=[programme_level, 'both']
+                    )
+                    total_count = all_student_presentations.count()
+                    completed_count = all_student_presentations.filter(status='completed').count()
+                    remaining_count = total_count - completed_count
+                else:
+                    total_count = 0
+                    completed_count = 0
+                    remaining_count = 0
+                
+                students_dict[student_id] = {
+                    'student_id': student_id,
+                    'student_name': student.get_full_name_with_title(),
+                    'student_email': student.email,
+                    'student_registration_number': student.registration_number or '',
+                    'student_school': school_name,
+                    'student_programme': programme_name,
+                    'programme_level': programme_level.upper() if programme_level != 'unknown' else 'N/A',
+                    'presentations': [],
+                    'total_presentations': total_count,
+                    'completed_presentations': completed_count,
+                    'remaining_presentations': remaining_count,
+                }
+            
+            # Get all forms submitted for this presentation
+            from apps.presentations.models import Form as PresentationForm
+            forms = PresentationForm.objects.filter(
+                presentation=presentation
+            ).order_by('-created_at')
+            
+            forms_data = []
+            for form in forms:
+                forms_data.append({
+                    'id': str(form.id),
+                    'name': form.name,
+                    'form_role': form.form_role,
+                    'created_at': form.created_at,
+                    'updated_at': form.updated_at,
+                    'has_data': bool(form.data)
+                })
+            
+            # Get examiner feedback/comments if exists
+            examiner_feedback = []
+            if presentation.assignment:
+                for ea in presentation.assignment.examiner_assignments.all():
+                    if ea.decline_reason or ea.status != 'pending':
+                        examiner_feedback.append({
+                            'examiner_name': ea.examiner.get_full_name_with_title(),
+                            'examiner_email': ea.examiner.email,
+                            'status': ea.status,
+                            'comment': ea.decline_reason or '',
+                            'date': ea.acceptance_date
+                        })
+            
+            # Add presentation to student's list
+            students_dict[student_id]['presentations'].append({
+                'id': str(presentation.id),
+                'research_title': presentation.research_title,
+                'presentation_type': presentation.presentation_type.name,
+                'status': presentation.status,
+                'proposed_date': presentation.proposed_date,
+                'scheduled_date': presentation.scheduled_date,
+                'submission_date': presentation.submission_date,
+                'created_at': presentation.created_at,
+                'forms': forms_data,
+                'forms_count': len(forms_data),
+                'examiner_feedback': examiner_feedback,
+            })
+        
+        # Convert to list and sort by newest presentation
+        students_list = list(students_dict.values())
+        students_list.sort(key=lambda x: max([p['created_at'] for p in x['presentations']]) if x['presentations'] else timezone.now(), reverse=True)
+        
+        # Pagination
+        total_students = len(students_list)
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_students = students_list[start_idx:end_idx]
+        
+        return Response({
+            'count': total_students,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': (total_students + page_size - 1) // page_size,
+            'students': paginated_students
+        })
+
+
+class ExaminerStudentsView(APIView):
+    """View for examiners to see all their assigned students, reports, and progress"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        user = request.user
+        page = int(request.GET.get('page', 1))
+        page_size = int(request.GET.get('page_size', 10))
+        
+        # Get all examiner assignments for this user
+        examiner_assignments = ExaminerAssignment.objects.filter(
+            examiner=user
+        ).select_related(
+            'assignment__presentation__student',
+            'assignment__presentation__presentation_type',
+            'assignment__presentation__student__student_profile',
+            'assignment__presentation__student__school',
+            'assignment__presentation__student__programme'
+        ).prefetch_related(
+            'assignment__presentation__supervisors',
+            'assignment__examiner_assignments__examiner'
+        ).order_by('-assignment__created_at')
+        
+        # Group by student
+        students_dict = {}
+        for ea in examiner_assignments:
+            presentation = ea.assignment.presentation
+            student = presentation.student
+            student_id = str(student.id)
+            
+            if student_id not in students_dict:
+                # Get student profile info
+                student_profile = getattr(student, 'student_profile', None)
+                programme_level = student_profile.programme_level if student_profile else 'unknown'
+                school_name = student.school.name if student.school else ''
+                programme_name = student.programme.name if student.programme else ''
+                
+                # Get supervisors info (from first presentation)
+                supervisors_info = []
+                for sup in presentation.supervisors.all():
+                    supervisors_info.append({
+                        'name': sup.get_full_name_with_title(),
+                        'email': sup.email
+                    })
+                
+                # Get total presentations and completed count for this student's programme level
+                if programme_level in ['phd', 'masters']:
+                    all_student_presentations = PresentationRequest.objects.filter(
+                        student=student,
+                        presentation_type__programme_type__in=[programme_level, 'both']
+                    )
+                    total_count = all_student_presentations.count()
+                    completed_count = all_student_presentations.filter(status='completed').count()
+                    remaining_count = total_count - completed_count
+                else:
+                    total_count = 0
+                    completed_count = 0
+                    remaining_count = 0
+                
+                students_dict[student_id] = {
+                    'student_id': student_id,
+                    'student_name': student.get_full_name_with_title(),
+                    'student_email': student.email,
+                    'student_registration_number': student.registration_number or '',
+                    'student_school': school_name,
+                    'student_programme': programme_name,
+                    'programme_level': programme_level.upper() if programme_level != 'unknown' else 'N/A',
+                    'supervisors': supervisors_info,
+                    'presentations': [],
+                    'total_presentations': total_count,
+                    'completed_presentations': completed_count,
+                    'remaining_presentations': remaining_count,
+                }
+            
+            # Get all forms submitted for this presentation
+            from apps.presentations.models import Form as PresentationForm
+            forms = PresentationForm.objects.filter(
+                presentation=presentation
+            ).order_by('-created_at')
+            
+            forms_data = []
+            for form in forms:
+                forms_data.append({
+                    'id': str(form.id),
+                    'name': form.name,
+                    'form_role': form.form_role,
+                    'created_at': form.created_at,
+                    'updated_at': form.updated_at,
+                    'has_data': bool(form.data)
+                })
+            
+            # Get all examiner feedback (including from other examiners)
+            all_examiner_feedback = []
+            for examiner_assignment in ea.assignment.examiner_assignments.all():
+                if examiner_assignment.decline_reason or examiner_assignment.status != 'pending':
+                    all_examiner_feedback.append({
+                        'examiner_name': examiner_assignment.examiner.get_full_name_with_title(),
+                        'examiner_email': examiner_assignment.examiner.email,
+                        'status': examiner_assignment.status,
+                        'comment': examiner_assignment.decline_reason or '',
+                        'date': examiner_assignment.acceptance_date,
+                        'is_me': examiner_assignment.examiner.id == user.id
+                    })
+            
+            # Add presentation to student's list
+            students_dict[student_id]['presentations'].append({
+                'id': str(presentation.id),
+                'research_title': presentation.research_title,
+                'presentation_type': presentation.presentation_type.name,
+                'status': presentation.status,
+                'proposed_date': presentation.proposed_date,
+                'scheduled_date': presentation.scheduled_date,
+                'submission_date': presentation.submission_date,
+                'created_at': presentation.created_at,
+                'assignment_status': ea.status,
+                'my_decline_reason': ea.decline_reason,
+                'forms': forms_data,
+                'forms_count': len(forms_data),
+                'examiner_feedback': all_examiner_feedback,
+            })
+        
+        # Convert to list and sort by newest presentation
+        students_list = list(students_dict.values())
+        students_list.sort(key=lambda x: max([p['created_at'] for p in x['presentations']]) if x['presentations'] else timezone.now(), reverse=True)
+        
+        # Pagination
+        total_students = len(students_list)
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_students = students_list[start_idx:end_idx]
+        
+        return Response({
+            'count': total_students,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': (total_students + page_size - 1) // page_size,
+            'students': paginated_students
+        })
+
+
+class AllStudentsReportView(APIView):
+    """View for authorized users to see all students with presentations"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        user = request.user
+        
+        # Admin/coordinator can see all (matches frontend permission logic)
+        is_admin = user.user_groups.filter(name='admin').exists()
+        is_coordinator = user.user_groups.filter(name='coordinator').exists()
+        
+        # Check if user has view_all_students permission
+        user_groups = user.user_groups.all()
+        has_permission = False
+        for group in user_groups:
+            perms = group.permissions or []
+            if 'view_all_students' in perms:
+                has_permission = True
+                break
+        
+        # Only admins, coordinators, or users with the permission can access
+        if not (is_admin or is_coordinator or has_permission):
+            return Response(
+                {'detail': 'You do not have permission to view all students.'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        page = int(request.GET.get('page', 1))
+        page_size = int(request.GET.get('page_size', 10))
+        
+        # Get all students with student profiles
+        from apps.users.models import CustomUser
+        all_students = CustomUser.objects.filter(
+            student_profile__isnull=False
+        ).select_related(
+            'student_profile',
+            'school',
+            'programme'
+        ).order_by('first_name', 'last_name')
+        
+        # Build student data
+        students_dict = {}
+        for student in all_students:
+            student_id = str(student.id)
+            
+            # Get student profile info
+            student_profile = getattr(student, 'student_profile', None)
+            programme_level = student_profile.programme_level if student_profile else 'unknown'
+            school_name = student.school.name if student.school else ''
+            programme_name = student.programme.name if student.programme else ''
+            
+            # Get all presentations for this student
+            student_presentations = PresentationRequest.objects.filter(
+                student=student
+            ).select_related(
+                'presentation_type',
+                'assignment'
+            ).prefetch_related(
+                'supervisors',
+                'assignment__examiner_assignments__examiner',
+                'assignment__supervisor_assignments'
+            ).order_by('-created_at')
+            
+            # Get supervisors info (from first presentation or empty list)
+            supervisors_info = []
+            if student_presentations.exists():
+                first_presentation = student_presentations.first()
+                for sup in first_presentation.supervisors.all():
+                    supervisors_info.append({
+                        'name': sup.get_full_name_with_title(),
+                        'email': sup.email
+                    })
+            
+            # Get total presentations and completed count for this student's programme level
+            if programme_level in ['phd', 'masters']:
+                all_student_presentations = PresentationRequest.objects.filter(
+                    student=student,
+                    presentation_type__programme_type__in=[programme_level, 'both']
+                )
+                total_count = all_student_presentations.count()
+                completed_count = all_student_presentations.filter(status='completed').count()
+                remaining_count = total_count - completed_count
+            else:
+                total_count = 0
+                completed_count = 0
+                remaining_count = 0
+            
+            # Build presentations list
+            presentations_list = []
+            for presentation in student_presentations:
+                # Get all forms submitted for this presentation
+                from apps.presentations.models import Form as PresentationForm
+                forms = PresentationForm.objects.filter(
+                    presentation=presentation
+                ).order_by('-created_at')
+                
+                forms_data = []
+                for form in forms:
+                    forms_data.append({
+                        'id': str(form.id),
+                        'name': form.name,
+                        'form_role': form.form_role,
+                        'created_at': form.created_at,
+                        'updated_at': form.updated_at,
+                        'has_data': bool(form.data)
+                    })
+                
+                # Get examiner feedback/comments if exists
+                examiner_feedback = []
+                if hasattr(presentation, 'assignment') and presentation.assignment:
+                    for ea in presentation.assignment.examiner_assignments.all():
+                        if ea.decline_reason or ea.status != 'pending':
+                            examiner_feedback.append({
+                                'examiner_name': ea.examiner.get_full_name_with_title(),
+                                'examiner_email': ea.examiner.email,
+                                'status': ea.status,
+                                'comment': ea.decline_reason or '',
+                                'date': ea.acceptance_date
+                            })
+                
+                # Add presentation to list
+                presentations_list.append({
+                    'id': str(presentation.id),
+                    'research_title': presentation.research_title,
+                    'presentation_type': presentation.presentation_type.name,
+                    'status': presentation.status,
+                    'proposed_date': presentation.proposed_date,
+                    'scheduled_date': presentation.scheduled_date,
+                    'submission_date': presentation.submission_date,
+                    'created_at': presentation.created_at,
+                    'forms': forms_data,
+                    'forms_count': len(forms_data),
+                    'examiner_feedback': examiner_feedback,
+                })
+            
+            # Create student entry
+            students_dict[student_id] = {
+                'student_id': student_id,
+                'student_name': student.get_full_name_with_title(),
+                'student_email': student.email,
+                'student_registration_number': student.registration_number or '',
+                'student_school': school_name,
+                'student_programme': programme_name,
+                'programme_level': programme_level.upper() if programme_level != 'unknown' else 'N/A',
+                'supervisors': supervisors_info,
+                'presentations': presentations_list,
+                'total_presentations': total_count,
+                'completed_presentations': completed_count,
+                'remaining_presentations': remaining_count,
+            }
+        
+        # Convert to list and sort by student name
+        students_list = list(students_dict.values())
+        students_list.sort(key=lambda x: x['student_name'])
+        
+        # Pagination
+        total_students = len(students_list)
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_students = students_list[start_idx:end_idx]
+        
+        return Response({
+            'count': total_students,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': (total_students + page_size - 1) // page_size,
+            'students': paginated_students
+        })
+
+
+class ModeratorPresentationsView(APIView):
+    """
+    View for moderators to see all completed presentations that need validation
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        
+        # Check if user is a moderator or admin
+        is_moderator = user.user_groups.filter(name='moderator').exists()
+        is_admin = user.user_groups.filter(name='admin').exists()
+        
+        if not (is_moderator or is_admin):
+            return Response(
+                {'detail': 'Only moderators can access this information.'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Get presentations where scheduled_date has passed or is today
+        # Include scheduled (pending validation), completed (validated as took place), 
+        # and cancelled (validated as did not take place)
+        from datetime import date
+        today = date.today()
+        
+        presentations = PresentationRequest.objects.filter(
+            status__in=['scheduled', 'completed', 'cancelled'],
+            scheduled_date__lte=today
+        ).select_related(
+            'student',
+            'presentation_type',
+            'student__student_profile',
+            'student__school',
+            'student__programme'
+        ).prefetch_related(
+            'assignment',
+            'assignment__session_moderator',
+            'assignment__examiner_assignments',
+            'assignment__examiner_assignments__examiner'
+        ).order_by('-created_at')
+        
+        # Serialize the data
+        results = []
+        for presentation in presentations:
+            student = presentation.student
+            student_profile = getattr(student, 'student_profile', None)
+            assignment = getattr(presentation, 'assignment', None)
+            
+            # Get examiner assignments
+            examiner_assignments_data = []
+            if assignment:
+                examiner_assignments = assignment.examiner_assignments.all()
+                for ea in examiner_assignments:
+                    examiner_assignments_data.append({
+                        'id': ea.id,
+                        'examiner_name': ea.examiner.get_full_name_with_title() if ea.examiner else 'N/A',
+                        'examiner_email': ea.examiner.email if ea.examiner else 'N/A',
+                        'status': ea.status,
+                        'decline_reason': ea.decline_reason or '',
+                        'acceptance_date': ea.acceptance_date,
+                    })
+            
+            results.append({
+                'id': presentation.id,
+                'student_name': student.get_full_name_with_title(),
+                'student_email': student.email,
+                'student_registration_number': student.registration_number,
+                'student_programme_level': student_profile.programme_level if student_profile else None,
+                'research_title': presentation.research_title,
+                'presentation_type': presentation.presentation_type.id if presentation.presentation_type else None,
+                'presentation_type_detail': {
+                    'id': presentation.presentation_type.id,
+                    'name': presentation.presentation_type.name,
+                    'description': presentation.presentation_type.description,
+                } if presentation.presentation_type else None,
+                'status': presentation.status,
+                'proposed_date': presentation.proposed_date,
+                'scheduled_date': presentation.scheduled_date,
+                'actual_date': presentation.actual_date,
+                'submission_date': presentation.submission_date,
+                'created_at': presentation.created_at,
+                'moderator_validation_status': presentation.moderator_validation_status,
+                'moderator_validation_comments': presentation.moderator_validation_comments,
+                'moderator_validated_at': presentation.moderator_validated_at,
+                'moderator_validation_count': presentation.moderator_validation_count,
+                'assignment': {
+                    'id': assignment.id if assignment else None,
+                    'session_moderator_name': assignment.session_moderator.get_full_name_with_title() if assignment and assignment.session_moderator else None,
+                    'examiner_assignments': examiner_assignments_data,
+                } if assignment else None,
+            })
+        
+        return Response(results)
+
+
+class ValidatePresentationView(APIView):
+    """
+    View for moderators to validate if a presentation took place or did not take place
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        
+        # Check if user is a moderator, admin, or dean
+        is_moderator = user.user_groups.filter(name='moderator').exists()
+        is_admin = user.user_groups.filter(name='admin').exists()
+        is_dean = user.user_groups.filter(name='dean').exists() or user.user_groups.filter(name='dean_cocse').exists()
+        
+        # Check permissions
+        if not (is_moderator or is_admin or is_dean):
+            return Response(
+                {'detail': 'Only moderators, admins, or deans can validate presentations.'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            presentation = PresentationRequest.objects.get(id=pk)
+        except PresentationRequest.DoesNotExist:
+            return Response(
+                {'detail': 'Presentation not found.'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Log for debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Validating presentation ID: {presentation.id} for student: {presentation.student.id}")
+        
+        # Check validation count restriction for moderators
+        # After 2 validations, only admin or dean can modify
+        if is_moderator and not (is_admin or is_dean):
+            if presentation.moderator_validation_count >= 2:
+                return Response(
+                    {'detail': 'This presentation has already been validated twice. '
+                              'Only administrators or deans can modify it further.'}, 
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        # Check if presentation is scheduled (pending) or already validated (completed/cancelled)
+        # Allow re-validation of completed and cancelled presentations
+        from datetime import date
+        if presentation.status not in ['scheduled', 'completed', 'cancelled']:
+            return Response(
+                {'detail': 'Only scheduled, completed, or cancelled presentations can be validated.'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if presentation.scheduled_date and presentation.scheduled_date.date() > date.today():
+            return Response(
+                {'detail': 'Cannot validate presentation before scheduled date.'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        decision = request.data.get('decision')  # 'approved' or 'did_not_take_place'
+        comments = request.data.get('comments', '').strip()
+        
+        if decision not in ['approved', 'did_not_take_place']:
+            return Response(
+                {'detail': 'Decision must be "approved" (presentation took place) or "did_not_take_place".'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not comments:
+            return Response(
+                {'detail': 'Comments are required for validation.'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Update the presentation with validation
+        presentation.moderator_validation_status = decision
+        presentation.moderator_validation_comments = comments
+        presentation.moderator_validated_at = timezone.now()
+        presentation.moderator_validated_by = user
+        
+        # Increment validation count for moderators (but not for admin/dean overrides)
+        if is_moderator and not (is_admin or is_dean):
+            presentation.moderator_validation_count += 1
+        
+        # Update status based on decision
+        if decision == 'approved':
+            presentation.status = 'completed'
+            presentation.actual_date = timezone.now()
+            # Save with explicit update_fields to ensure only this presentation is updated
+            presentation.save(update_fields=[
+                'moderator_validation_status',
+                'moderator_validation_comments', 
+                'moderator_validated_at',
+                'moderator_validated_by',
+                'moderator_validation_count',
+                'status',
+                'actual_date'
+            ])
+        elif decision == 'did_not_take_place':
+            presentation.status = 'cancelled'
+            # Save with explicit update_fields to ensure only this presentation is updated
+            presentation.save(update_fields=[
+                'moderator_validation_status',
+                'moderator_validation_comments',
+                'moderator_validated_at',
+                'moderator_validated_by',
+                'moderator_validation_count',
+                'status'
+            ])
+        
+        # You could send notifications here if needed
+        # send_validation_notification(presentation, decision, user)
+        
+        # Log the update for debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Successfully updated presentation ID: {presentation.id} with status: {presentation.status}, validation count: {presentation.moderator_validation_count}")
+        
+        # Prepare response message
+        response_data = {
+            'detail': f'Presentation {decision} successfully.',
+            'presentation_id': str(presentation.id),
+            'student_id': str(presentation.student.id),
+            'moderator_validation_status': presentation.moderator_validation_status,
+            'moderator_validation_comments': presentation.moderator_validation_comments,
+            'moderator_validated_at': presentation.moderator_validated_at,
+            'moderator_validation_count': presentation.moderator_validation_count,
+        }
+        
+        # Add warning if moderator is at limit
+        if is_moderator and not (is_admin or is_dean):
+            if presentation.moderator_validation_count >= 2:
+                response_data['warning'] = 'This presentation has reached the validation limit. ' \
+                                          'Further changes can only be made by administrators or deans.'
+        
+        return Response(response_data)
+
+
+class PresentationsReportView(APIView):
+    """
+    Comprehensive presentations report for moderators, QA, and vice chancellors
+    Shows all presentations with their status, students, dates, and validation info
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        
+        # Check if user has the appropriate role
+        is_moderator = user.user_groups.filter(name='moderator').exists()
+        is_qa = user.user_groups.filter(name='qa').exists()
+        is_vice_chancellor = user.user_groups.filter(name='vice_chancellor').exists()
+        is_admin = user.user_groups.filter(name='admin').exists()
+        
+        # Check additional permissions
+        user_groups = user.user_groups.all()
+        has_permission = False
+        for group in user_groups:
+            perms = group.permissions or []
+            if 'view_presentations_report' in perms or 'view_all_presentations' in perms:
+                has_permission = True
+                break
+        
+        if not (is_moderator or is_qa or is_vice_chancellor or is_admin or has_permission):
+            return Response(
+                {'detail': 'You do not have permission to view this report.'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Get query parameters for filtering
+        status_filter = request.GET.get('status', None)
+        programme_level = request.GET.get('programme_level', None)
+        presentation_type = request.GET.get('presentation_type', None)
+        from_date = request.GET.get('from_date', None)
+        to_date = request.GET.get('to_date', None)
+        validation_status = request.GET.get('validation_status', None)
+        school_id = request.GET.get('school', None)
+        page = int(request.GET.get('page', 1))
+        page_size = int(request.GET.get('page_size', 25))
+        
+        # Base queryset with all necessary relationships
+        queryset = PresentationRequest.objects.select_related(
+            'student',
+            'student__student_profile',
+            'student__school',
+            'student__programme',
+            'presentation_type',
+            'assignment',
+            'assignment__session_moderator',
+            'moderator_validated_by'
+        ).prefetch_related(
+            'supervisors',
+            'assignment__examiner_assignments',
+            'assignment__examiner_assignments__examiner',
+            'assignment__supervisor_assignments'
+        ).order_by('-created_at')
+        
+        # Apply filters
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        if programme_level:
+            queryset = queryset.filter(student__student_profile__programme_level=programme_level)
+        
+        if presentation_type:
+            queryset = queryset.filter(presentation_type__id=presentation_type)
+        
+        if from_date:
+            from datetime import datetime
+            from_date_obj = datetime.strptime(from_date, '%Y-%m-%d').date()
+            queryset = queryset.filter(scheduled_date__gte=from_date_obj)
+        
+        if to_date:
+            from datetime import datetime
+            to_date_obj = datetime.strptime(to_date, '%Y-%m-%d').date()
+            queryset = queryset.filter(scheduled_date__lte=to_date_obj)
+        
+        if validation_status:
+            queryset = queryset.filter(moderator_validation_status=validation_status)
+        
+        if school_id:
+            queryset = queryset.filter(student__school__id=school_id)
+        
+        # Get total count before pagination
+        total_count = queryset.count()
+        
+        # Apply pagination
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        presentations = queryset[start_idx:end_idx]
+        
+        # Build results
+        results = []
+        for presentation in presentations:
+            student = presentation.student
+            student_profile = getattr(student, 'student_profile', None)
+            assignment = getattr(presentation, 'assignment', None)
+            
+            # Get supervisors
+            supervisors_data = []
+            for supervisor in presentation.supervisors.all():
+                supervisors_data.append({
+                    'id': supervisor.id,
+                    'name': supervisor.get_full_name_with_title(),
+                    'email': supervisor.email
+                })
+            
+            # Get examiners
+            examiners_data = []
+            if assignment:
+                for ea in assignment.examiner_assignments.all():
+                    examiners_data.append({
+                        'id': ea.id,
+                        'examiner_name': ea.examiner.get_full_name_with_title() if ea.examiner else 'N/A',
+                        'examiner_email': ea.examiner.email if ea.examiner else 'N/A',
+                        'status': ea.status,
+                        'acceptance_date': ea.acceptance_date,
+                        'decline_reason': ea.decline_reason or ''
+                    })
+            
+            # Get forms count
+            forms_count = presentation.forms.count() if hasattr(presentation, 'forms') else 0
+            
+            results.append({
+                'id': str(presentation.id),
+                'student_name': student.get_full_name_with_title(),
+                'student_email': student.email,
+                'student_registration_number': student.registration_number or '',
+                'student_school': student.school.name if student.school else '',
+                'student_programme': student.programme.name if student.programme else '',
+                'programme_level': (student_profile.programme_level.upper() if student_profile and student_profile.programme_level else 'N/A'),
+                'research_title': presentation.research_title,
+                'presentation_type': {
+                    'id': presentation.presentation_type.id if presentation.presentation_type else None,
+                    'name': presentation.presentation_type.name if presentation.presentation_type else 'N/A',
+                    'description': presentation.presentation_type.description if presentation.presentation_type else ''
+                },
+                'status': presentation.status,
+                'proposed_date': presentation.proposed_date,
+                'scheduled_date': presentation.scheduled_date,
+                'actual_date': presentation.actual_date,
+                'submission_date': presentation.submission_date,
+                'created_at': presentation.created_at,
+                'supervisors': supervisors_data,
+                'examiners': examiners_data,
+                'session_moderator': {
+                    'name': assignment.session_moderator.get_full_name_with_title() if assignment and assignment.session_moderator else None,
+                    'email': assignment.session_moderator.email if assignment and assignment.session_moderator else None
+                } if assignment else None,
+                'moderator_validation_status': presentation.moderator_validation_status,
+                'moderator_validation_comments': presentation.moderator_validation_comments,
+                'moderator_validated_at': presentation.moderator_validated_at,
+                'moderator_validated_by': {
+                    'name': presentation.moderator_validated_by.get_full_name_with_title() if presentation.moderator_validated_by else None,
+                    'email': presentation.moderator_validated_by.email if presentation.moderator_validated_by else None
+                } if presentation.moderator_validated_by else None,
+                'forms_count': forms_count,
+            })
+        
+        # Get summary statistics
+        all_presentations = PresentationRequest.objects.all()
+        stats = {
+            'total': all_presentations.count(),
+            'pending': all_presentations.filter(status='pending').count(),
+            'submitted': all_presentations.filter(status='submitted').count(),
+            'scheduled': all_presentations.filter(status='scheduled').count(),
+            'completed': all_presentations.filter(status='completed').count(),
+            'cancelled': all_presentations.filter(status='cancelled').count(),
+            'pending_validation': all_presentations.filter(
+                status='scheduled',
+                moderator_validation_status__in=['', 'pending', None]
+            ).count(),
+            'validated': all_presentations.filter(
+                moderator_validation_status__in=['approved', 'did_not_take_place']
+            ).count(),
+        }
+        
+        return Response({
+            'count': total_count,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': (total_count + page_size - 1) // page_size if total_count > 0 else 1,
+            'statistics': stats,
+            'presentations': results
+        })
+

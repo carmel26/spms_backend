@@ -78,7 +78,7 @@ class BlockchainViewSet(viewsets.ReadOnlyModelViewSet):
         trail = BlockchainManager.get_audit_trail(presentation)
         
         return Response({
-            'presentation_id': presentation.id,
+            'presentation_id': str(presentation.id),
             'research_title': presentation.research_title,
             'student': presentation.student.get_full_name(),
             'audit_trail': trail,
@@ -102,7 +102,7 @@ class BlockchainViewSet(viewsets.ReadOnlyModelViewSet):
         trail = BlockchainManager.get_audit_trail(user_obj)
         
         return Response({
-            'user_id': user_obj.id,
+            'user_id': str(user_obj.id),
             'user_name': user_obj.get_full_name(),
             'audit_trail': trail,
             'total_records': len(trail)

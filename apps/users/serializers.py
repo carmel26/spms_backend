@@ -67,7 +67,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
         """Get detailed information about user's groups/roles including permissions"""
         return [
             {
-                'id': group.id,
+                'id': str(group.id),
                 'name': group.name,
                 'display_name': group.display_name,
                 'permissions': group.permissions or []
@@ -297,7 +297,7 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
     def get_user(self, obj):
         u = obj.user
         return {
-            'id': u.id,
+            'id': str(u.id),
             'first_name': u.first_name,
             'last_name': u.last_name,
             'email': u.email,
@@ -307,7 +307,7 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
     def get_programme(self, obj):
         prog = obj.user.programme
         if prog:
-            return {'id': prog.id, 'name': prog.name}
+            return {'id': str(prog.id), 'name': prog.name}
         return None
 
 
