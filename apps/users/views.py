@@ -988,24 +988,56 @@ class SystemSettingsViewSet(viewsets.ModelViewSet):
                     )
                     
             elif 'mysql' in db_engine:
-                # For MySQL database - try mysqldump first
+                # For MySQL database - try to find mysqldump
                 mysqldump_cmd = shutil.which('mysqldump')
+                
+                # Try common locations if not in PATH
+                if not mysqldump_cmd:
+                    common_paths = [
+                        '/usr/bin/mysqldump',
+                        '/usr/local/bin/mysqldump',
+                        '/usr/local/mysql/bin/mysqldump',
+                        '/opt/homebrew/bin/mysqldump'
+                    ]
+                    for path in common_paths:
+                        if os.path.exists(path) and os.access(path, os.X_OK):
+                            mysqldump_cmd = path
+                            break
                 
                 if mysqldump_cmd:
                     # Use mysqldump command
-                    cmd = [
-                        mysqldump_cmd,
-                        '-h', db_settings.get('HOST', 'localhost'),
-                        '-P', str(db_settings.get('PORT', '3306')),
-                        '-u', db_settings['USER'],
-                        f'--password={db_settings["PASSWORD"]}',
-                        db_settings['NAME'],
-                        '--result-file', backup_path
-                    ]
-                    subprocess.run(cmd, check=True, capture_output=True)
+                    try:
+                        cmd = [
+                            mysqldump_cmd,
+                            '-h', db_settings.get('HOST', 'localhost'),
+                            '-P', str(db_settings.get('PORT', '3306')),
+                            '-u', db_settings['USER'],
+                            f'--password={db_settings["PASSWORD"]}',
+                            db_settings['NAME'],
+                            '--result-file', backup_path
+                        ]
+                        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                        
+                        # Verify backup was created
+                        if not os.path.exists(backup_path) or os.path.getsize(backup_path) == 0:
+                            raise Exception('mysqldump created empty or no file')
+                            
+                    except (subprocess.CalledProcessError, Exception) as e:
+                        # mysqldump failed, use Django fallback
+                        print(f"mysqldump failed ({str(e)}), using Django dumpdata as fallback")
+                        backup_path = backup_path.replace('.sql', '.json')
+                        backup_filename = backup_filename.replace('.sql', '.json')
+                        
+                        with open(backup_path, 'w') as f:
+                            call_command('dumpdata', 
+                                       '--natural-foreign', 
+                                       '--natural-primary',
+                                       '--indent', '2',
+                                       stdout=f,
+                                       exclude=['contenttypes', 'auth.permission'])
                 else:
-                    # Fallback to Django dumpdata (JSON format)
-                    print("WARNING: mysqldump not found, using Django dumpdata as fallback")
+                    # mysqldump not found, use Django dumpdata (JSON format)
+                    print("INFO: mysqldump not available, using Django dumpdata (works for all databases)")
                     backup_path = backup_path.replace('.sql', '.json')
                     backup_filename = backup_filename.replace('.sql', '.json')
                     
@@ -1021,19 +1053,45 @@ class SystemSettingsViewSet(viewsets.ModelViewSet):
                 # For PostgreSQL database
                 pg_dump_cmd = shutil.which('pg_dump')
                 
+                # Try common locations
+                if not pg_dump_cmd:
+                    common_paths = [
+                        '/usr/bin/pg_dump',
+                        '/usr/local/bin/pg_dump',
+                        '/usr/local/pgsql/bin/pg_dump'
+                    ]
+                    for path in common_paths:
+                        if os.path.exists(path) and os.access(path, os.X_OK):
+                            pg_dump_cmd = path
+                            break
+                
                 if pg_dump_cmd:
-                    env = os.environ.copy()
-                    env['PGPASSWORD'] = db_settings['PASSWORD']
-                    subprocess.run([
-                        pg_dump_cmd,
-                        '-h', db_settings.get('HOST', 'localhost'),
-                        '-U', db_settings['USER'],
-                        '-d', db_settings['NAME'],
-                        '-f', backup_path
-                    ], env=env, check=True)
+                    try:
+                        env = os.environ.copy()
+                        env['PGPASSWORD'] = db_settings['PASSWORD']
+                        subprocess.run([
+                            pg_dump_cmd,
+                            '-h', db_settings.get('HOST', 'localhost'),
+                            '-U', db_settings['USER'],
+                            '-d', db_settings['NAME'],
+                            '-f', backup_path
+                        ], env=env, check=True)
+                    except subprocess.CalledProcessError:
+                        # pg_dump failed, use Django fallback
+                        print("pg_dump failed, using Django dumpdata as fallback")
+                        backup_path = backup_path.replace('.sql', '.json')
+                        backup_filename = backup_filename.replace('.sql', '.json')
+                        
+                        with open(backup_path, 'w') as f:
+                            call_command('dumpdata',
+                                       '--natural-foreign',
+                                       '--natural-primary', 
+                                       '--indent', '2',
+                                       stdout=f,
+                                       exclude=['contenttypes', 'auth.permission'])
                 else:
-                    # Fallback to Django dumpdata
-                    print("WARNING: pg_dump not found, using Django dumpdata as fallback")
+                    # pg_dump not found, use Django dumpdata
+                    print("INFO: pg_dump not available, using Django dumpdata")
                     backup_path = backup_path.replace('.sql', '.json')
                     backup_filename = backup_filename.replace('.sql', '.json')
                     
@@ -1058,12 +1116,20 @@ class SystemSettingsViewSet(viewsets.ModelViewSet):
                                stdout=f,
                                exclude=['contenttypes', 'auth.permission'])
             
+            # Verify backup file was created and has content
+            if not os.path.exists(backup_path):
+                raise Exception('Backup file was not created')
+            
+            backup_size = os.path.getsize(backup_path)
+            if backup_size == 0:
+                raise Exception('Backup file is empty')
+            
             # Log the backup creation
             AuditLog.log_action(
                 user=request.user,
                 action='EXPORT',
                 model_instance=SystemSettings.get_settings(),
-                description=f'Database backup created: {backup_filename}',
+                description=f'Database backup created: {backup_filename} ({backup_size:,} bytes)',
                 ip_address=request.META.get('REMOTE_ADDR'),
                 user_agent=request.META.get('HTTP_USER_AGENT', ''),
                 request_path=request.path,
@@ -1085,12 +1151,14 @@ class SystemSettingsViewSet(viewsets.ModelViewSet):
                 return response
             
             # Return JSON response with file info
+            file_type = 'SQL' if backup_filename.endswith('.sql') else 'JSON'
             return Response({
                 'success': True,
-                'message': 'Backup created successfully',
+                'message': f'Backup created successfully ({file_type} format)',
                 'filename': backup_filename,
                 'path': backup_path,
-                'size': os.path.getsize(backup_path)
+                'size': backup_size,
+                'type': file_type
             })
             
         except subprocess.CalledProcessError as e:
