@@ -84,6 +84,8 @@ dist/
 *.sqlite3
 *.db
 *.sql
+backups/
+db.sqlite3.backup.*
 
 # OS
 .DS_Store

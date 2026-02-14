@@ -933,6 +933,333 @@ class SystemSettingsViewSet(viewsets.ModelViewSet):
         settings = SystemSettings.get_settings()
         serializer = self.get_serializer(settings)
         return Response(serializer.data)
+    
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def create_backup(self, request):
+        """Create a database backup file and optionally download it"""
+        from django.conf import settings as django_settings
+        from django.http import FileResponse
+        from django.core.management import call_command
+        from datetime import datetime
+        import subprocess
+        import os
+        import traceback
+        import shutil
+        
+        # Check if user has admin permission
+        try:
+            has_admin_role = request.user.has_role('admin')
+        except Exception as e:
+            # Fallback if has_role fails
+            has_admin_role = False
+            
+        if not request.user.is_superuser and not has_admin_role:
+            return Response(
+                {'error': 'Only administrators can create backups'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Generate backup filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        backup_filename = f'spms-{timestamp}.sql'
+        backup_path = os.path.join(django_settings.BASE_DIR, 'backups', backup_filename)
+        
+        # Create backups directory if it doesn't exist
+        os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+        
+        try:
+            # Get database settings
+            db_settings = django_settings.DATABASES['default']
+            db_engine = db_settings['ENGINE']
+            
+            if 'sqlite' in db_engine:
+                # For SQLite database
+                db_path = db_settings['NAME']
+                sqlite_cmd = shutil.which('sqlite3')
+                if not sqlite_cmd:
+                    raise Exception('sqlite3 command not found. Please install SQLite.')
+                
+                # Use SQLite dump command
+                with open(backup_path, 'w') as f:
+                    subprocess.run(
+                        [sqlite_cmd, db_path, '.dump'],
+                        stdout=f,
+                        check=True
+                    )
+                    
+            elif 'mysql' in db_engine:
+                # For MySQL database - try mysqldump first
+                mysqldump_cmd = shutil.which('mysqldump')
+                
+                if mysqldump_cmd:
+                    # Use mysqldump command
+                    cmd = [
+                        mysqldump_cmd,
+                        '-h', db_settings.get('HOST', 'localhost'),
+                        '-P', str(db_settings.get('PORT', '3306')),
+                        '-u', db_settings['USER'],
+                        f'--password={db_settings["PASSWORD"]}',
+                        db_settings['NAME'],
+                        '--result-file', backup_path
+                    ]
+                    subprocess.run(cmd, check=True, capture_output=True)
+                else:
+                    # Fallback to Django dumpdata (JSON format)
+                    print("WARNING: mysqldump not found, using Django dumpdata as fallback")
+                    backup_path = backup_path.replace('.sql', '.json')
+                    backup_filename = backup_filename.replace('.sql', '.json')
+                    
+                    with open(backup_path, 'w') as f:
+                        call_command('dumpdata', 
+                                   '--natural-foreign', 
+                                   '--natural-primary',
+                                   '--indent', '2',
+                                   stdout=f,
+                                   exclude=['contenttypes', 'auth.permission'])
+                    
+            elif 'postgresql' in db_engine:
+                # For PostgreSQL database
+                pg_dump_cmd = shutil.which('pg_dump')
+                
+                if pg_dump_cmd:
+                    env = os.environ.copy()
+                    env['PGPASSWORD'] = db_settings['PASSWORD']
+                    subprocess.run([
+                        pg_dump_cmd,
+                        '-h', db_settings.get('HOST', 'localhost'),
+                        '-U', db_settings['USER'],
+                        '-d', db_settings['NAME'],
+                        '-f', backup_path
+                    ], env=env, check=True)
+                else:
+                    # Fallback to Django dumpdata
+                    print("WARNING: pg_dump not found, using Django dumpdata as fallback")
+                    backup_path = backup_path.replace('.sql', '.json')
+                    backup_filename = backup_filename.replace('.sql', '.json')
+                    
+                    with open(backup_path, 'w') as f:
+                        call_command('dumpdata',
+                                   '--natural-foreign',
+                                   '--natural-primary', 
+                                   '--indent', '2',
+                                   stdout=f,
+                                   exclude=['contenttypes', 'auth.permission'])
+            else:
+                # Use Django's dumpdata as universal fallback
+                print(f"Using Django dumpdata for database engine: {db_engine}")
+                backup_path = backup_path.replace('.sql', '.json')
+                backup_filename = backup_filename.replace('.sql', '.json')
+                
+                with open(backup_path, 'w') as f:
+                    call_command('dumpdata',
+                               '--natural-foreign',
+                               '--natural-primary',
+                               '--indent', '2',
+                               stdout=f,
+                               exclude=['contenttypes', 'auth.permission'])
+            
+            # Log the backup creation
+            AuditLog.log_action(
+                user=request.user,
+                action='EXPORT',
+                model_instance=SystemSettings.get_settings(),
+                description=f'Database backup created: {backup_filename}',
+                ip_address=request.META.get('REMOTE_ADDR'),
+                user_agent=request.META.get('HTTP_USER_AGENT', ''),
+                request_path=request.path,
+                request_method=request.method
+            )
+            
+            # Check if user wants to download the file
+            if request.data.get('download', False):
+                # Return file for download
+                file_ext = os.path.splitext(backup_filename)[1]
+                content_type = 'application/sql' if file_ext == '.sql' else 'application/json'
+                
+                response = FileResponse(
+                    open(backup_path, 'rb'),
+                    as_attachment=True,
+                    filename=backup_filename
+                )
+                response['Content-Type'] = content_type
+                return response
+            
+            # Return JSON response with file info
+            return Response({
+                'success': True,
+                'message': 'Backup created successfully',
+                'filename': backup_filename,
+                'path': backup_path,
+                'size': os.path.getsize(backup_path)
+            })
+            
+        except subprocess.CalledProcessError as e:
+            error_msg = f'Backup command failed: {str(e)}'
+            print(f'ERROR: {error_msg}')
+            traceback.print_exc()
+            return Response(
+                {'error': error_msg},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        except Exception as e:
+            error_msg = f'Backup failed: {str(e)}'
+            print(f'ERROR: {error_msg}')
+            traceback.print_exc()
+            return Response(
+                {'error': error_msg, 'details': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['get'])
+    def download_backup(self, request):
+        """Download a specific backup file"""
+        from django.conf import settings as django_settings
+        from django.http import FileResponse
+        import os
+        
+        # Check if user has admin permission
+        try:
+            has_admin_role = request.user.has_role('admin')
+        except Exception:
+            has_admin_role = False
+            
+        if not request.user.is_superuser and not has_admin_role:
+            return Response(
+                {'error': 'Only administrators can download backups'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        filename = request.query_params.get('filename')
+        if not filename:
+            return Response(
+                {'error': 'Filename parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Security: Only allow filenames matching backup pattern
+        if not filename.startswith('spms-'):
+            return Response(
+                {'error': 'Invalid backup filename'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not (filename.endswith('.sql') or filename.endswith('.json')):
+            return Response(
+                {'error': 'Invalid backup file type'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        backup_path = os.path.join(django_settings.BASE_DIR, 'backups', filename)
+        
+        if not os.path.exists(backup_path):
+            return Response(
+                {'error': 'Backup file not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        try:
+            file_ext = os.path.splitext(filename)[1]
+            content_type = 'application/sql' if file_ext == '.sql' else 'application/json'
+            
+            response = FileResponse(
+                open(backup_path, 'rb'),
+                as_attachment=True,
+                filename=filename
+            )
+            response['Content-Type'] = content_type
+            return response
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to download file: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['get'])
+    def list_backups(self, request):
+        """List all available backup files"""
+        from django.conf import settings as django_settings
+        import os
+        from datetime import datetime
+        
+        # Check if user has admin permission
+        try:
+            has_admin_role = request.user.has_role('admin')
+        except Exception:
+            has_admin_role = False
+            
+        if not request.user.is_superuser and not has_admin_role:
+            return Response(
+                {'error': 'Only administrators can list backups'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        backups_dir = os.path.join(django_settings.BASE_DIR, 'backups')
+        
+        if not os.path.exists(backups_dir):
+            return Response({'backups': []})
+        
+        backups = []
+        for filename in os.listdir(backups_dir):
+            if filename.startswith('spms-') and (filename.endswith('.sql') or filename.endswith('.json')):
+                filepath = os.path.join(backups_dir, filename)
+                stat = os.stat(filepath)
+                file_ext = os.path.splitext(filename)[1]
+                backups.append({
+                    'filename': filename,
+                    'size': stat.st_size,
+                    'type': 'SQL' if file_ext == '.sql' else 'JSON',
+                    'created': datetime.fromtimestamp(stat.st_ctime).isoformat(),
+                    'modified': datetime.fromtimestamp(stat.st_mtime).isoformat()
+                })
+        
+        # Sort by created date, newest first
+        backups.sort(key=lambda x: x['created'], reverse=True)
+        
+        return Response({'backups': backups})
+    
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def clear_cache(self, request):
+        """Clear application cache"""
+        from django.core.cache import cache
+        
+        # Check if user has admin permission
+        try:
+            has_admin_role = request.user.has_role('admin')
+        except Exception:
+            has_admin_role = False
+            
+        if not request.user.is_superuser and not has_admin_role:
+            return Response(
+                {'error': 'Only administrators can clear cache'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            # Clear Django cache
+            cache.clear()
+            
+            # Log the cache clearing
+            AuditLog.log_action(
+                user=request.user,
+                action='DELETE',
+                model_instance=SystemSettings.get_settings(),
+                description='Application cache cleared',
+                ip_address=request.META.get('REMOTE_ADDR'),
+                user_agent=request.META.get('HTTP_USER_AGENT', ''),
+                request_path=request.path,
+                request_method=request.method
+            )
+            
+            return Response({
+                'success': True,
+                'message': 'Cache cleared successfully'
+            })
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to clear cache: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
