@@ -71,11 +71,25 @@ class UserViewSet(viewsets.ModelViewSet):
             success=True
         )
         
-        # Rename email and username to free them up for reuse
+        # Rename unique fields to free them up for reuse
         # Append timestamp to ensure uniqueness
         timestamp = timezone.now().strftime('%Y%m%d%H%M%S')
         instance.email = f"{instance.email}-deleted-{timestamp}"
         instance.username = f"{instance.username}-deleted-{timestamp}"
+        
+        # Also modify phone_number to anonymize personal data
+        if instance.phone_number:
+            # Store original phone number before deletion
+            instance.phone_number_deleted_original = instance.phone_number
+            suffix = f"-deleted-{timestamp}"
+            max_len = 50
+            base_len = max_len - len(suffix)
+            truncated = instance.phone_number[:base_len] if base_len > 0 else ''
+            instance.phone_number = f"{truncated}{suffix}"[:max_len]
+        
+        # Modify registration_number to free it up for reuse (it's unique)
+        if instance.registration_number:
+            instance.registration_number = f"{instance.registration_number}-deleted-{timestamp}"
         
         # Mark user as deleted (soft delete)
         instance.is_deleted = True
@@ -251,6 +265,8 @@ Best regards,
     @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def register(self, request):
         """Register new student"""
+        print(f"Registration attempt with data: {request.data}")
+        
         serializer = CustomUserSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
@@ -258,6 +274,9 @@ Best regards,
             
             # Self-registered users don't need to change password (they chose it)
             user.password_changed = True
+            
+            # Ensure user is not approved by default (requires admin approval)
+            user.is_approved = False
             
             # Add student role to user
             try:
@@ -273,6 +292,35 @@ Best regards,
                 user.user_groups.add(student_group)
             
             user.save()
+            
+            # Create notification for admission officers about new student registration
+            try:
+                from apps.notifications.models import Notification
+                from django.contrib.contenttypes.models import ContentType
+                
+                # Get admission officers and admins who should be notified
+                admission_officers = CustomUser.objects.filter(
+                    is_active=True,
+                    user_groups__name__in=['admission', 'admission_officer', 'admin']
+                ).distinct()
+                
+                # Create notification for each admission officer
+                for officer in admission_officers:
+                    Notification.objects.create(
+                        recipient=officer,
+                        notification_type='new_student_registration',
+                        title='New Student Registration',
+                        message=f'{user.get_full_name()} has registered and is awaiting approval.',
+                        related_user=user,
+                        content_type=ContentType.objects.get_for_model(user),
+                        object_id=str(user.id),
+                        action_url='/admin/users',
+                        priority=1
+                    )
+                print(f"Notification created for {admission_officers.count()} admission officer(s)")
+            except Exception as e:
+                print(f"Failed to create notification for admission officers: {e}")
+                # Don't block registration if notification fails
             
             # Create token
             token, created = Token.objects.get_or_create(user=user)
@@ -388,6 +436,9 @@ Best regards,
                 'token': token.key,
                 'user': CustomUserSerializer(user).data
             }, status=status.HTTP_201_CREATED)
+        
+        # Log validation errors for debugging
+        print(f"Registration validation errors: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=False, methods=['post'], permission_classes=[AllowAny])
@@ -996,6 +1047,10 @@ Secure Progress Management System Team
         partial = kwargs.pop('partial', True)  # Default to partial update
         instance = self.get_object()
         data = request.data.copy()
+        
+        # Track if user is being approved (was not approved before, now being approved)
+        was_not_approved = not instance.is_approved
+        is_being_approved = False
 
         # If approving a user, set approved_date and approved_by
         if 'is_approved' in data:
@@ -1006,10 +1061,110 @@ Secure Progress Management System Team
                 data['approved_date'] = timezone.now()
                 if request.user and request.user.is_authenticated:
                     data['approved_by'] = request.user.id
+                
+                # Check if this is a status change from not approved to approved
+                if was_not_approved:
+                    is_being_approved = True
 
         serializer = self.get_serializer(instance, data=data, partial=partial)
         if serializer.is_valid():
             self.perform_update(serializer)
+            
+            # Send approval email if user was just approved
+            if is_being_approved:
+                try:
+                    from django.core.mail import send_mail
+                    from django.conf import settings
+                    
+                    app_name = settings.APP_NAME if hasattr(settings, 'APP_NAME') else 'Academic Progress Report Management System'
+                    app_short = settings.APP_SHORT_NAME if hasattr(settings, 'APP_SHORT_NAME') else 'APRMS'
+                    
+                    subject = f'Account Approved - Welcome to {app_short}'
+                    
+                    html_message = f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .header {{ background: linear-gradient(135deg, #4a90e2 0%, #3a7bc8 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }}
+        .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }}
+        .info-box {{ background: white; padding: 20px; border-left: 4px solid #28a745; margin: 20px 0; border-radius: 4px; }}
+        .button {{ display: inline-block; background: #28a745; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; margin: 20px 0; }}
+        .footer {{ text-align: center; color: #666; margin-top: 20px; font-size: 12px; }}
+        .icon {{ display: inline-block; width: 20px; height: 20px; margin-right: 8px; vertical-align: middle; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <svg class="icon" style="width: 40px; height: 40px;" viewBox="0 0 24 24" fill="white"><path d="M9,20.42L2.79,14.21L5.62,11.38L9,14.77L18.88,4.88L21.71,7.71L9,20.42Z"/></svg>
+            <h1>Account Approved!</h1>
+            <p>You can now access {app_short}</p>
+        </div>
+        <div class="content">
+            <p>Dear {instance.get_full_name()},</p>
+            
+            <p>Great news! Your student account for the {app_name} has been reviewed and approved. You can now log in to access the system.</p>
+            
+            <div class="info-box">
+                <h3><svg class="icon" viewBox="0 0 24 24" fill="#28a745"><path d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z"/></svg>Your Login Details:</h3>
+                <p><strong>Email:</strong> {instance.email}<br>
+                <strong>Login URL:</strong> {settings.FRONTEND_URL or 'http://localhost:4200'}/login</p>
+            </div>
+            
+            <p>You can use your email address and the password you set during registration to log in to the system.</p>
+            
+            <p style="text-align: center;">
+                <a href="{settings.FRONTEND_URL or 'http://localhost:4200'}/login" class="button">Login to {app_short}</a>
+            </p>
+            
+            <p>If you encounter any issues logging in or have any questions, please don't hesitate to contact our support team.</p>
+            
+            <div class="footer">
+                <p>Best regards,<br>
+                {app_short} Administration Team<br>
+                © 2026 {app_name}</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+                    '''
+                    
+                    text_message = f'''
+Account Approved - Welcome to {app_short}
+
+Dear {instance.get_full_name()},
+
+Great news! Your student account for the {app_name} has been reviewed and approved. You can now log in to access the system.
+
+Your Login Details:
+- Email: {instance.email}
+- Login URL: {settings.FRONTEND_URL or 'http://localhost:4200'}/login
+
+You can use your email address and the password you set during registration to log in to the system.
+
+If you encounter any issues logging in or have any questions, please don't hesitate to contact our support team.
+
+Best regards,
+{app_short} Administration Team
+                    '''
+                    
+                    send_mail(
+                        subject=subject,
+                        message=text_message,
+                        html_message=html_message,
+                        from_email=settings.DEFAULT_FROM_EMAIL if hasattr(settings, 'DEFAULT_FROM_EMAIL') else 'noreply@example.com',
+                        recipient_list=[instance.email],
+                        fail_silently=True,  # Don't block approval if email fails
+                    )
+                    print(f"Approval email sent to: {instance.email}")
+                except Exception as e:
+                    print(f"Failed to send approval email: {e}")
+                    # Don't block approval if email fails
+            
             return Response(serializer.data)
         else:
             print(f"User update validation errors: {serializer.errors}")

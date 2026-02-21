@@ -26,6 +26,7 @@ class Notification(models.Model):
         ('profile_approved', 'Profile Approved'),
         ('profile_rejected', 'Profile Rejected'),
         ('presentation_completed', 'Presentation Completed'),
+        ('new_student_registration', 'New Student Registration'),
         ('system_message', 'System Message'),
     )
 

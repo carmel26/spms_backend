@@ -126,7 +126,13 @@ class CustomUser(AbstractUser):
         help_text="User's roles/groups - can have multiple except students (students must be student-only)"
     )
     
-    phone_number = models.CharField(max_length=20, blank=True, null=True)
+    phone_number = models.CharField(max_length=50, blank=True, null=True)
+    phone_number_deleted_original = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="Original phone number before deletion"
+    )
     middle_name = models.CharField(max_length=150, blank=True, null=True)
     registration_number = models.CharField(
         max_length=50,

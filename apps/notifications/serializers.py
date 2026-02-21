@@ -13,6 +13,18 @@ class NotificationSerializer(serializers.ModelSerializer):
         read_only=True
     )
 
+    related_user_school = serializers.CharField(
+        source='related_user.school.name',
+        read_only=True,
+        allow_null=True
+    )
+
+    related_user_programme = serializers.CharField(
+        source='related_user.programme.name',
+        read_only=True,
+        allow_null=True
+    )
+
     # Generic object info (Angular-friendly)
     related_object = serializers.SerializerMethodField()
 
@@ -29,6 +41,8 @@ class NotificationSerializer(serializers.ModelSerializer):
  
             'related_user',
             'related_user_name',
+            'related_user_school',
+            'related_user_programme',
  
             'related_object',
  
