@@ -71,6 +71,12 @@ class UserViewSet(viewsets.ModelViewSet):
             success=True
         )
         
+        # Rename email and username to free them up for reuse
+        # Append timestamp to ensure uniqueness
+        timestamp = timezone.now().strftime('%Y%m%d%H%M%S')
+        instance.email = f"{instance.email}-deleted-{timestamp}"
+        instance.username = f"{instance.username}-deleted-{timestamp}"
+        
         # Mark user as deleted (soft delete)
         instance.is_deleted = True
         instance.deleted_date = timezone.now()
@@ -88,6 +94,160 @@ class UserViewSet(viewsets.ModelViewSet):
             return [AllowAny()]
         return [IsAuthenticated()]
     
+    def perform_create(self, serializer):
+        """Override to handle admin-created users with email notifications"""
+        # Save the user
+        user = serializer.save()
+        
+        # Get request data
+        password = self.request.data.get('password', '12345678')
+        send_email = self.request.data.get('send_email', False)
+        must_change_password = self.request.data.get('must_change_password', False)
+        is_approved = self.request.data.get('is_approved', False)
+        
+        # Set password
+        user.set_password(password)
+        
+        # Set password change requirement
+        user.password_changed = not must_change_password
+        
+        # Set approval status
+        if is_approved:
+            user.is_approved = True
+            user.approved_date = timezone.now()
+            if self.request.user.is_authenticated:
+                user.approved_by = self.request.user
+        
+        user.save()
+        
+        # Send welcome email if requested
+        if send_email:
+            try:
+                from django.core.mail import send_mail
+                from django.conf import settings
+                
+                app_name = settings.APP_NAME if hasattr(settings, 'APP_NAME') else 'Academic Progress Report Management System'
+                app_short = settings.APP_SHORT_NAME if hasattr(settings, 'APP_SHORT_NAME') else 'APRMS'
+                
+                subject = f'Welcome to {app_short} - Your Account Has Been Created'
+                
+                html_message = f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .header {{ background: linear-gradient(135deg, #4a90e2 0%, #3a7bc8 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }}
+        .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }}
+        .info-box {{ background: white; padding: 20px; border-left: 4px solid #4a90e2; margin: 20px 0; border-radius: 4px; }}
+        .credentials {{ background: #f0f7ff; padding: 15px; border-radius: 6px; margin: 15px 0; font-family: monospace; }}
+        .button {{ display: inline-block; background: #4a90e2; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; margin: 20px 0; }}
+        .warning {{ background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 15px 0; border-radius: 4px; }}
+        .footer {{ text-align: center; color: #666; margin-top: 20px; font-size: 12px; }}
+        .icon {{ display: inline-block; width: 20px; height: 20px; margin-right: 8px; vertical-align: middle; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <svg class="icon" style="width: 40px; height: 40px;" viewBox="0 0 24 24" fill="white"><path d="M12,3L1,9L12,15L21,10.09V17H23V9M5,13.18V17.18L12,21L19,17.18V13.18L12,17L5,13.18Z"/></svg>
+            <h1>Welcome to {app_short}!</h1>
+            <p>Your account has been created by the administration</p>
+        </div>
+        <div class="content">
+            <p>Dear {user.get_full_name()},</p>
+            
+            <p>An account has been created for you in the {app_name} ({app_short}). You can now access the system using the credentials below.</p>
+            
+            <div class="info-box">
+                <h3><svg class="icon" viewBox="0 0 24 24" fill="#4a90e2"><path d="M13,9H11V7H13M13,17H11V11H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/></svg>Your Account Details:</h3>
+                <p><strong>Name:</strong> {user.get_full_name()}<br>
+                <strong>Email:</strong> {user.email}</p>
+            </div>
+            
+            <div class="credentials">
+                <h3><svg class="icon" viewBox="0 0 24 24" fill="#4a90e2"><path d="M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z"/></svg>Login Credentials:</h3>
+                <p><strong>Email:</strong> {user.email}<br>
+                <strong>Password:</strong> {password}</p>
+            </div>
+            
+            <div class="warning">
+                <svg class="icon" viewBox="0 0 24 24" fill="#856404"><path d="M13,14H11V10H13M13,18H11V16H13M1,21H23L12,2L1,21Z"/></svg>
+                <strong>IMPORTANT:</strong> You will be required to change your password on your first login for security purposes. Please choose a strong password.
+            </div>
+            
+            <p style="text-align: center;">
+                <a href="{settings.FRONTEND_URL or 'http://localhost:4200'}/login" class="button">Login to {app_short}</a>
+            </p>
+            
+            <h3>Password Requirements:</h3>
+            <ul>
+                <li>At least 8 characters</li>
+                <li>One uppercase letter</li>
+                <li>One lowercase letter</li>
+                <li>One number</li>
+                <li>One special character (!@#$%^&*)</li>
+            </ul>
+            
+            <p>If you have any questions or need assistance, please contact our support team.</p>
+            
+            <div class="footer">
+                <p>Best regards,<br>
+                {app_short} Administration Team<br>
+                © 2026 {app_name}</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+                '''
+                
+                text_message = f'''
+Welcome to {app_short}!
+
+Dear {user.get_full_name()},
+
+An account has been created for you in the {app_name} ({app_short}). You can now access the system using the credentials below.
+
+Your Account Details:
+- Name: {user.get_full_name()}
+- Email: {user.email}
+
+Login Credentials:
+- Email: {user.email}
+- Password: {password}
+
+IMPORTANT: You will be required to change your password on your first login for security purposes.
+
+Password Requirements:
+- At least 8 characters
+- One uppercase letter
+- One lowercase letter
+- One number
+- One special character (!@#$%^&*)
+
+Login URL: {settings.FRONTEND_URL or 'http://localhost:4200'}/login
+
+If you have any questions or need assistance, please contact our support team.
+
+Best regards,
+{app_short} Administration Team
+                '''
+                
+                send_mail(
+                    subject=subject,
+                    message=text_message,
+                    html_message=html_message,
+                    from_email=settings.DEFAULT_FROM_EMAIL if hasattr(settings, 'DEFAULT_FROM_EMAIL') else 'noreply@example.com',
+                    recipient_list=[user.email],
+                    fail_silently=True,
+                )
+                print(f"Account creation email sent to: {user.email}")
+            except Exception as e:
+                print(f"Failed to send account creation email: {e}")
+                # Don't block user creation if email fails
+    
     @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def register(self, request):
         """Register new student"""
@@ -95,6 +255,9 @@ class UserViewSet(viewsets.ModelViewSet):
         if serializer.is_valid():
             user = serializer.save()
             user.set_password(request.data.get('password'))
+            
+            # Self-registered users don't need to change password (they chose it)
+            user.password_changed = True
             
             # Add student role to user
             try:
@@ -114,8 +277,114 @@ class UserViewSet(viewsets.ModelViewSet):
             # Create token
             token, created = Token.objects.get_or_create(user=user)
             
+            # Send welcome email
+            try:
+                from django.core.mail import send_mail
+                from django.conf import settings
+                
+                app_name = settings.APP_NAME if hasattr(settings, 'APP_NAME') else 'Academic Progress Report Management System'
+                app_short = settings.APP_SHORT_NAME if hasattr(settings, 'APP_SHORT_NAME') else 'APRMS'
+                
+                subject = f'Welcome to {app_short} - Registration Successful'
+                
+                html_message = f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .header {{ background: linear-gradient(135deg, #4a90e2 0%, #3a7bc8 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }}
+        .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }}
+        .info-box {{ background: white; padding: 20px; border-left: 4px solid #4a90e2; margin: 20px 0; border-radius: 4px; }}
+        .button {{ display: inline-block; background: #4a90e2; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; margin: 20px 0; }}
+        .footer {{ text-align: center; color: #666; margin-top: 20px; font-size: 12px; }}
+        .icon {{ display: inline-block; width: 20px; height: 20px; margin-right: 8px; vertical-align: middle; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <svg class="icon" style="width: 40px; height: 40px;" viewBox="0 0 24 24" fill="white"><path d="M12,3L1,9L12,15L21,10.09V17H23V9M5,13.18V17.18L12,21L19,17.18V13.18L12,17L5,13.18Z"/></svg>
+            <h1>Welcome to {app_short}!</h1>
+            <p>Your student account has been created successfully</p>
+        </div>
+        <div class="content">
+            <p>Dear {user.get_full_name()},</p>
+            
+            <p>Thank you for registering with the {app_name} ({app_short}). Your account has been created and is pending approval by the administration.</p>
+            
+            <div class="info-box">
+                <h3><svg class="icon" viewBox="0 0 24 24" fill="#4a90e2"><path d="M13,9H11V7H13M13,17H11V11H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/></svg>Your Account Details:</h3>
+                <p><strong>Email:</strong> {user.email}<br>
+                <strong>Name:</strong> {user.get_full_name()}<br>
+                <strong>Registration Number:</strong> {user.registration_number or 'Not provided'}</p>
+            </div>
+            
+            <p><strong>Next Steps:</strong></p>
+            <ol>
+                <li>Your account will be reviewed by the administration team</li>
+                <li>Once approved, you'll receive a confirmation email</li>
+                <li>You can then log in to access the system</li>
+            </ol>
+            
+            <p style="text-align: center;">
+                <a href="{settings.FRONTEND_URL or 'http://localhost:4200'}/login" class="button">Go to Login Page</a>
+            </p>
+            
+            <p>If you have any questions or did not create this account, please contact our support team.</p>
+            
+            <div class="footer">
+                <p>Best regards,<br>
+                {app_short} Team<br>
+                © 2026 {app_name}</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+                '''
+                
+                text_message = f'''
+Welcome to {app_short}!
+
+Dear {user.get_full_name()},
+
+Thank you for registering with the {app_name} ({app_short}). Your account has been created and is pending approval by the administration.
+
+Your Account Details:
+- Email: {user.email}
+- Name: {user.get_full_name()}
+- Registration Number: {user.registration_number or 'Not provided'}
+
+Next Steps:
+1. Your account will be reviewed by the administration team
+2. Once approved, you'll receive a confirmation email
+3. You can then log in to access the system
+
+Login URL: {settings.FRONTEND_URL or 'http://localhost:4200'}/login
+
+If you have any questions or did not create this account, please contact our support team.
+
+Best regards,
+{app_short} Team
+                '''
+                
+                send_mail(
+                    subject=subject,
+                    message=text_message,
+                    html_message=html_message,
+                    from_email=settings.DEFAULT_FROM_EMAIL if hasattr(settings, 'DEFAULT_FROM_EMAIL') else 'noreply@example.com',
+                    recipient_list=[user.email],
+                    fail_silently=True,  # Don't block registration if email fails
+                )
+                print(f"Welcome email sent to: {user.email}")
+            except Exception as e:
+                print(f"Failed to send welcome email: {e}")
+                # Don't block registration if email fails
+            
             return Response({
-                'message': 'Registration successful',
+                'message': 'Registration successful! Please wait for admin approval to access the system.',
                 'token': token.key,
                 'user': CustomUserSerializer(user).data
             }, status=status.HTTP_201_CREATED)

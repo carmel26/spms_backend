@@ -14,6 +14,10 @@ DEBUG = config('DEBUG', default=True, cast=bool)
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,172.20.10.11,spmstest.netlify.app', cast=lambda v: [s.strip() for s in v.split(',')])
 
+# Application Branding
+APP_NAME = config('APP_NAME', default='Academic Progress Report Management System')
+APP_SHORT_NAME = config('APP_SHORT_NAME', default='APRMS')
+
 # Frontend URL for password reset emails
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:4200')
 
