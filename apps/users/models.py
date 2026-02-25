@@ -374,6 +374,18 @@ class StudentProfile(models.Model):
         blank=True,
         related_name='supervised_students'
     )
+    # Personal information
+    gender = models.CharField(max_length=20, blank=True, null=True, help_text='Gender')
+    birth_date = models.DateField(null=True, blank=True)
+    nationality = models.CharField(max_length=100, blank=True, null=True)
+    # Contact information
+    contact_mobile = models.CharField(max_length=50, blank=True, null=True)
+    contact_email_secondary = models.EmailField(blank=True, null=True)
+    address = models.TextField(blank=True, null=True)
+    # Next of kin
+    nok_name = models.CharField(max_length=255, blank=True, null=True)
+    nok_mobile = models.CharField(max_length=50, blank=True, null=True)
+    nok_relation = models.CharField(max_length=100, blank=True, null=True)
     is_active_student = models.BooleanField(default=True)
     is_admitted = models.BooleanField(
         default=False,

@@ -11,4 +11,4 @@ Student: {{ presentation.student.get_full_name }}
 
 Please log in to the system to view the assignment and respond: {{ frontend_url }}/presentations/{{ presentation.id }}
 
-This message was sent by Secure Progress Management System.
+This message was sent by Academic Progress Report Management System.

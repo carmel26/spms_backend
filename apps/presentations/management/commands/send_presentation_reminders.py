@@ -217,8 +217,8 @@ class Command(BaseCommand):
     </div>
     
     <div class="footer">
-        <p>This is an automated reminder from Secure Progress Management System</p>
-        <p>&copy; 2026 Secure Progress Management System. All rights reserved.</p>
+        <p>This is an automated reminder from Academic Progress Report Management System</p>
+        <p>&copy; 2026 Academic Progress Report Management System. All rights reserved.</p>
     </div>
 </body>
 </html>
@@ -243,7 +243,7 @@ Supervisors: {', '.join([s.get_full_name() for s in supervisors]) if supervisors
 Please ensure you are ready to begin at the scheduled time.
 
 ---
-Secure Progress Management System
+Academic Progress Report Management System
             '''
 
             # Collect recipients

@@ -275,7 +275,13 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             'id', 'programme_level',
             'supervisor', 'supervisor_name', 'admission_year', 'enrollment_year',
             'expected_graduation', 'is_active_student', 'is_admitted',
-            'progress_percentage', 'total_presentations', 'completed_presentations'
+            'progress_percentage', 'total_presentations', 'completed_presentations',
+            # personal
+            'gender', 'birth_date', 'nationality',
+            # contact
+            'contact_mobile', 'contact_email_secondary', 'address',
+            # next of kin
+            'nok_name', 'nok_mobile', 'nok_relation'
         ]
         read_only_fields = ['id', 'progress_percentage', 'total_presentations', 'completed_presentations']
 
@@ -291,7 +297,13 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'supervisor', 'supervisor_name',
             'admission_year', 'enrollment_year', 'expected_graduation',
-            'programme_level', 'is_admitted', 'is_active_student', 'programme'
+            'programme_level', 'is_admitted', 'is_active_student', 'programme',
+            # personal
+            'gender', 'birth_date', 'nationality',
+            # contact
+            'contact_mobile', 'contact_email_secondary', 'address',
+            # next of kin
+            'nok_name', 'nok_mobile', 'nok_relation'
         ]
 
     def get_user(self, obj):

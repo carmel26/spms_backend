@@ -1,5 +1,5 @@
 """
-Django settings for Secure Progress Management System.
+Django settings for Academic Progress Report Management System.
 """
 
 import os

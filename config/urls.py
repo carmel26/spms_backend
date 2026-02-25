@@ -1,5 +1,5 @@
 """
-URL Configuration for Secure Progress Management System.
+URL Configuration for Academic Progress Report Management System.
 """
 
 from django.contrib import admin

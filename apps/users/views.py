@@ -729,8 +729,8 @@ Best regards,
     </div>
     
     <div class="footer">
-        <p>This is an automated email from Secure Progress Management System</p>
-        <p>&copy; 2026 Secure Progress Management System. All rights reserved.</p>
+        <p>This is an automated email from Academic Progress Report Management System</p>
+        <p>&copy; 2026 Academic Progress Report Management System. All rights reserved.</p>
         <p style="font-size: 12px; margin-top: 10px;">If you're having trouble clicking the button, copy and paste this URL into your browser:<br>
         <span style="color: #0b63c5;">{reset_link}</span></p>
     </div>
@@ -742,7 +742,7 @@ Best regards,
             text_message = f'''
 Hello {user.get_full_name()},
 
-You have requested to reset your password for the Secure Progress Management System.
+You have requested to reset your password for the Academic Progress Report Management System.
 
 Click the link below to reset your password:
 {reset_link}
@@ -752,11 +752,11 @@ This link will expire in 1 hour.
 If you did not request this password reset, please ignore this email.
 
 Best regards,
-Secure Progress Management System Team
+Academic Progress Report Management System Team
             '''
             
             send_mail(
-                subject='Password Reset Request - Secure Progress Management System',
+                subject='Password Reset Request - Academic Progress Report Management System',
                 message=text_message,
                 html_message=html_message,
                 from_email=settings.DEFAULT_FROM_EMAIL if hasattr(settings, 'DEFAULT_FROM_EMAIL') else 'noreply@example.com',
@@ -1220,6 +1220,18 @@ class StudentProfileViewSet(viewsets.ModelViewSet):
                 enrollment_year=request.data.get('enrollment_year'),
                 expected_graduation=request.data.get('expected_graduation'),
                 supervisor_id=request.data.get('supervisor') if request.data.get('supervisor') else None,
+                # personal
+                gender=request.data.get('gender'),
+                birth_date=request.data.get('birth_date') or None,
+                nationality=request.data.get('nationality'),
+                # contact
+                contact_mobile=request.data.get('contact_mobile'),
+                contact_email_secondary=request.data.get('contact_email_secondary'),
+                address=request.data.get('address'),
+                # next of kin
+                nok_name=request.data.get('nok_name'),
+                nok_mobile=request.data.get('nok_mobile'),
+                nok_relation=request.data.get('nok_relation'),
                 is_active_student=True,
                 is_admitted=True  # Auto-admit since they completed their profile
             )

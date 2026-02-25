@@ -1,5 +1,5 @@
 """
-WSGI config for Secure Progress Management System.
+WSGI config for Academic Progress Report Management System.
 """
 
 import os
