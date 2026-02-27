@@ -121,7 +121,6 @@ class UserViewSet(viewsets.ModelViewSet):
         
         # Set password
         user.set_password(password)
-        
         # Set password change requirement
         user.password_changed = not must_change_password
         
@@ -205,16 +204,10 @@ class UserViewSet(viewsets.ModelViewSet):
             </ul>
             
             <p>If you have any questions or need assistance, please contact our support team.</p>
-            
-            <div class="footer">
                 <p>Best regards,<br>
                 {app_short} Administration Team<br>
                 © 2026 {app_name}</p>
             </div>
-        </div>
-    </div>
-</body>
-</html>
                 '''
                 
                 text_message = f'''
@@ -334,9 +327,11 @@ Best regards,
                 app_short = settings.APP_SHORT_NAME if hasattr(settings, 'APP_SHORT_NAME') else 'APRMS'
                 
                 subject = f'Welcome to {app_short} - Registration Successful'
-                
-                html_message = f'''
-<!DOCTYPE html>
+
+                reg_number = user.registration_number or 'Not provided'
+                frontend_url = settings.FRONTEND_URL or 'http://localhost:4200'
+
+                html_message = '''<!DOCTYPE html>
 <html>
 <head>
     <style>
@@ -354,19 +349,19 @@ Best regards,
     <div class="container">
         <div class="header">
             <svg class="icon" style="width: 40px; height: 40px;" viewBox="0 0 24 24" fill="white"><path d="M12,3L1,9L12,15L21,10.09V17H23V9M5,13.18V17.18L12,21L19,17.18V13.18L12,17L5,13.18Z"/></svg>
-            <h1>Welcome to {app_short}!</h1>
+            <h1>Welcome to %%APP_SHORT%%!</h1>
             <p>Your student account has been created successfully</p>
         </div>
         <div class="content">
-            <p>Dear {user.get_full_name()},</p>
+            <p>Dear %%USER_FULL_NAME%%,</p>
             
-            <p>Thank you for registering with the {app_name} ({app_short}). Your account has been created and is pending approval by the administration.</p>
+            <p>Thank you for registering with the %%APP_NAME%% (%%APP_SHORT%%). Your account has been created and is pending approval by the administration.</p>
             
             <div class="info-box">
                 <h3><svg class="icon" viewBox="0 0 24 24" fill="#4a90e2"><path d="M13,9H11V7H13M13,17H11V11H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/></svg>Your Account Details:</h3>
-                <p><strong>Email:</strong> {user.email}<br>
-                <strong>Name:</strong> {user.get_full_name()}<br>
-                <strong>Registration Number:</strong> {user.registration_number or 'Not provided'}</p>
+                <p><strong>Email:</strong> %%USER_EMAIL%%<br>
+                <strong>Name:</strong> %%USER_FULL_NAME%%<br>
+                <strong>Registration Number:</strong> %%REG_NUMBER%%</p>
             </div>
             
             <p><strong>Next Steps:</strong></p>
@@ -377,47 +372,62 @@ Best regards,
             </ol>
             
             <p style="text-align: center;">
-                <a href="{settings.FRONTEND_URL or 'http://localhost:4200'}/login" class="button">Go to Login Page</a>
+                <a href="%%FRONTEND_URL%%/login" class="button">Go to Login Page</a>
             </p>
             
             <p>If you have any questions or did not create this account, please contact our support team.</p>
             
             <div class="footer">
                 <p>Best regards,<br>
-                {app_short} Team<br>
-                © 2026 {app_name}</p>
+                %%APP_SHORT%% Team<br>
+                © 2026 %%APP_NAME%%</p>
             </div>
         </div>
     </div>
 </body>
-</html>
-                '''
-                
-                text_message = f'''
-Welcome to {app_short}!
+</html>'''
 
-Dear {user.get_full_name()},
+                # Replace placeholders to avoid f-string/format parsing issues
+                html_message = (html_message
+                                .replace('%%APP_SHORT%%', app_short)
+                                .replace('%%USER_FULL_NAME%%', user.get_full_name())
+                                .replace('%%APP_NAME%%', app_name)
+                                .replace('%%USER_EMAIL%%', user.email)
+                                .replace('%%REG_NUMBER%%', reg_number)
+                                .replace('%%FRONTEND_URL%%', frontend_url)
+                                )
 
-Thank you for registering with the {app_name} ({app_short}). Your account has been created and is pending approval by the administration.
+                text_message = ('''Welcome to %%APP_SHORT%%!
+
+Dear %%USER_FULL_NAME%%,
+
+Thank you for registering with the %%APP_NAME%% (%%APP_SHORT%%). Your account has been created and is pending approval by the administration.
 
 Your Account Details:
-- Email: {user.email}
-- Name: {user.get_full_name()}
-- Registration Number: {user.registration_number or 'Not provided'}
+- Email: %%USER_EMAIL%%
+- Name: %%USER_FULL_NAME%%
+- Registration Number: %%REG_NUMBER%%
 
 Next Steps:
 1. Your account will be reviewed by the administration team
 2. Once approved, you'll receive a confirmation email
 3. You can then log in to access the system
 
-Login URL: {settings.FRONTEND_URL or 'http://localhost:4200'}/login
+Login URL: %%FRONTEND_URL%%/login
 
 If you have any questions or did not create this account, please contact our support team.
 
 Best regards,
-{app_short} Team
-                '''
-                
+%%APP_SHORT%% Team
+'''
+                .replace('%%APP_SHORT%%', app_short)
+                .replace('%%USER_FULL_NAME%%', user.get_full_name())
+                .replace('%%APP_NAME%%', app_name)
+                .replace('%%USER_EMAIL%%', user.email)
+                .replace('%%REG_NUMBER%%', reg_number)
+                .replace('%%FRONTEND_URL%%', frontend_url)
+                )
+
                 send_mail(
                     subject=subject,
                     message=text_message,
@@ -1080,7 +1090,17 @@ Academic Progress Report Management System Team
                     app_short = settings.APP_SHORT_NAME if hasattr(settings, 'APP_SHORT_NAME') else 'APRMS'
                     
                     subject = f'Account Approved - Welcome to {app_short}'
-                    
+
+                    # Determine role display for the approved user
+                    role_qs = instance.user_groups.all()
+                    roles = [g.display_name or g.name for g in role_qs]
+                    if len(roles) == 0:
+                        account_label = 'account'
+                    elif len(roles) == 1:
+                        account_label = f"{roles[0]} account"
+                    else:
+                        account_label = f"accounts ({', '.join(roles)})"
+
                     html_message = f'''
 <!DOCTYPE html>
 <html>
@@ -1106,7 +1126,7 @@ Academic Progress Report Management System Team
         <div class="content">
             <p>Dear {instance.get_full_name()},</p>
             
-            <p>Great news! Your student account for the {app_name} has been reviewed and approved. You can now log in to access the system.</p>
+            <p>Great news! Your {account_label} for the {app_name} has been reviewed and approved. You can now log in to access the system.</p>
             
             <div class="info-box">
                 <h3><svg class="icon" viewBox="0 0 24 24" fill="#28a745"><path d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z"/></svg>Your Login Details:</h3>
@@ -1138,7 +1158,7 @@ Account Approved - Welcome to {app_short}
 
 Dear {instance.get_full_name()},
 
-Great news! Your student account for the {app_name} has been reviewed and approved. You can now log in to access the system.
+Great news! Your {account_label} for the {app_name} has been reviewed and approved. You can now log in to access the system.
 
 Your Login Details:
 - Email: {instance.email}
