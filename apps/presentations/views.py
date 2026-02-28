@@ -1,4 +1,4 @@
-from django.db.models import Q
+from django.db.models import Q, F
 from django.utils import timezone
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
@@ -550,20 +550,17 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
             status='completed'
         ).exists()
         
-        # If all examiners have submitted, mark presentation as completed
-        if all_examiners_completed:
+      
+        if all_examiners_completed and presentation.status != 'completed':
             presentation.status = 'completed'
             presentation.actual_date = timezone.now()
-            presentation.save()
-            
-            # Send notification to coordinator and student
-            try:
-                send_presentation_completed_notification(
-                    presentation_request=presentation,
-                    coordinator=assignment.coordinator
-                )
-            except Exception as e:
-                print(f"Failed to send completion notification: {e}")
+            presentation.save(update_fields=['status', 'actual_date'])
+
+            StudentProfile.objects.filter(
+                user=presentation.student
+            ).update(
+                completed_presentations=F('completed_presentations') + 1
+            )
         
         action_text = 'updated' if not created else 'submitted'
         status_message = 'Presentation marked as completed.' if all_examiners_completed else 'Waiting for other examiners to submit their assessments.'
@@ -2106,7 +2103,8 @@ class ModeratorPresentationsView(APIView):
         
         presentations = PresentationRequest.objects.filter(
             status__in=['scheduled', 'completed', 'cancelled'],
-            scheduled_date__lte=today
+            # scheduled_date__lte=today
+            # scheduled_date__gte=today
         ).select_related(
             'student',
             'presentation_type',
@@ -2257,9 +2255,10 @@ class ValidatePresentationView(APIView):
         # Increment validation count for moderators (but not for admin/dean overrides)
         if is_moderator and not (is_admin or is_dean):
             presentation.moderator_validation_count += 1
-        
+
         # Update status based on decision
         if decision == 'approved':
+            prev_status = presentation.status
             presentation.status = 'completed'
             presentation.actual_date = timezone.now()
             # Save with explicit update_fields to ensure only this presentation is updated
@@ -2272,6 +2271,20 @@ class ValidatePresentationView(APIView):
                 'status',
                 'actual_date'
             ])
+         
+            # if prev_status != 'completed':
+            # student_profile = getattr(presentation.student, 'student_profile', None)
+            # if student_profile:
+            #     student_profile.completed_presentations = (student_profile.completed_presentations or 0) + 1
+            #     student_profile.save(update_fields=['completed_presentations'])
+            #     logger.info(f"Incremented completed_presentations for student {presentation.student.id} to {student_profile.completed_presentations}")
+            StudentProfile.objects.filter(
+            user=presentation.student
+            ).update(
+                completed_presentations=F('completed_presentations') + 1
+            )
+            # raise Exception("Stopped 1 here for debugging")
+         
         elif decision == 'did_not_take_place':
             presentation.status = 'cancelled'
             # Save with explicit update_fields to ensure only this presentation is updated
