@@ -2103,7 +2103,7 @@ class ModeratorPresentationsView(APIView):
         
         presentations = PresentationRequest.objects.filter(
             status__in=['scheduled', 'completed', 'cancelled'],
-            # scheduled_date__lte=today
+            scheduled_date__lte=today
             # scheduled_date__gte=today
         ).select_related(
             'student',
