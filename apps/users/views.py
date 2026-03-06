@@ -862,6 +862,33 @@ Academic Progress Report Management System Team
                 return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
             requests = PresentationRequest.objects.filter(student=request.user)
         
+        # Build presentations grouped by type with status counts
+        from django.db.models import Count, Q
+        type_breakdown = (
+            requests
+            .values('presentation_type__name')
+            .annotate(
+                total=Count('id'),
+                completed=Count('id', filter=Q(status='completed')),
+                scheduled=Count('id', filter=Q(status='scheduled')),
+                pending=Count('id', filter=Q(status='submitted')),
+                accepted=Count('id', filter=Q(status='accepted')),
+            )
+            .order_by('presentation_type__name')
+        )
+
+        # Build a list of recent presentations for the history chart
+        recent_presentations = list(
+            requests
+            .select_related('presentation_type')
+            .order_by('-created_at')[:10]
+            .values(
+                'id', 'research_title', 'status',
+                'presentation_type__name',
+                'proposed_date', 'scheduled_date', 'created_at'
+            )
+        )
+
         return Response({
             'total_requests': requests.count(),
             'draft_requests': requests.filter(status='draft').count(),
@@ -871,6 +898,8 @@ Academic Progress Report Management System Team
             'scheduled_presentations': requests.filter(status='scheduled').count(),
             'completed_presentations': requests.filter(status='completed').count(),
             'approved_requests': requests.filter(status='accepted').count(),
+            'presentations_by_type': list(type_breakdown),
+            'recent_presentations': recent_presentations,
         })
     
     @action(detail=False, methods=['get'])

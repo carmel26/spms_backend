@@ -243,8 +243,9 @@ def send_supervisor_assignment_notification(supervisor, presentation_request, as
     Notify a supervisor that they have been assigned to a student's presentation.
     """
     title = "Supervisor Assignment"
+    pres_type_name = getattr(presentation_request.presentation_type, 'name', 'Presentation')
     message = (
-        f"You have been assigned as a supervisor for the presentation: "
+        f"You have been assigned as a supervisor for the {pres_type_name}: "
         f"'{presentation_request.research_title}' by {presentation_request.student.get_full_name()}."
     )
 
@@ -267,6 +268,7 @@ def send_supervisor_assignment_notification(supervisor, presentation_request, as
             'presentation': presentation_request,
             'supervisor': supervisor,
             'assigned_by': assigned_by,
+            'presentation_type': pres_type_name,
             'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
             'honorific': _get_honorific(supervisor)
         }
