@@ -307,6 +307,26 @@ class SystemSettings(models.Model):
         default=10,
         help_text='Q&A duration in minutes'
     )
+    min_supervisors = models.IntegerField(
+        default=2,
+        help_text='Minimum number of supervisors per presentation'
+    )
+    max_supervisors = models.IntegerField(
+        default=2,
+        help_text='Maximum number of supervisors per presentation'
+    )
+    min_examiners = models.IntegerField(
+        default=0,
+        help_text='Minimum number of proposed examiners per presentation'
+    )
+    max_examiners = models.IntegerField(
+        default=2,
+        help_text='Maximum number of proposed examiners per presentation'
+    )
+    allow_concurrent_presentations = models.BooleanField(
+        default=False,
+        help_text='Allow students to request a new presentation before the current one is completed'
+    )
     
     # Email Notification Settings
     email_on_registration = models.BooleanField(

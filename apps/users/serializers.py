@@ -233,6 +233,8 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'system_name', 'system_email', 'system_url',
             'max_presentations', 'presentation_duration', 'qa_duration',
+            'min_supervisors', 'max_supervisors', 'min_examiners', 'max_examiners',
+            'allow_concurrent_presentations',
             'email_on_registration', 'email_on_presentation_request', 'email_on_approval',
             'updated_at', 'updated_by'
         ]

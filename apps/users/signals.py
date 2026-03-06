@@ -80,6 +80,7 @@ def capture_usergroup_before_save(sender, instance, **kwargs):
                 'name': original.name,
                 'display_name': original.display_name,
                 'description': original.description,
+                'permissions': list(original.permissions) if original.permissions else [],
             }
             _pre_save_instances[f'UserGroup_{instance.pk}'] = data
         except UserGroup.DoesNotExist:
@@ -91,17 +92,23 @@ def log_usergroup_changes(sender, instance, created, **kwargs):
     """Log UserGroup changes to audit log"""
     if created:
         # Log creation
+        perm_list = list(instance.permissions) if instance.permissions else []
         changes = {
             'name': [None, instance.name],
             'display_name': [None, instance.display_name],
             'description': [None, instance.description or 'N/A'],
+            'permissions': [None, perm_list],
         }
+
+        desc_parts = [f'Created user group: {instance.display_name}']
+        if perm_list:
+            desc_parts.append(f'Permissions: {", ".join(perm_list)}')
         
         AuditLog.log_action(
             user=getattr(instance, '_current_user', None),
             action='CREATE',
             model_instance=instance,
-            description=f'Created user group: {instance.display_name}',
+            description='; '.join(desc_parts),
             changes=changes,
             success=True
         )
@@ -112,19 +119,39 @@ def log_usergroup_changes(sender, instance, created, **kwargs):
             old_data = _pre_save_instances[key]
             
             changes = {}
+            desc_parts = []
+
             if old_data['name'] != instance.name:
                 changes['name'] = [old_data['name'], instance.name]
+                desc_parts.append(f'Renamed: {old_data["name"]} → {instance.name}')
             if old_data['display_name'] != instance.display_name:
                 changes['display_name'] = [old_data['display_name'], instance.display_name]
+                desc_parts.append(f'Display name: {old_data["display_name"]} → {instance.display_name}')
             if old_data['description'] != (instance.description or ''):
                 changes['description'] = [old_data['description'], instance.description or 'N/A']
+
+            # Track permission changes
+            old_perms = set(old_data.get('permissions', []))
+            new_perms = set(list(instance.permissions) if instance.permissions else [])
+            if old_perms != new_perms:
+                changes['permissions'] = [sorted(old_perms), sorted(new_perms)]
+                added = sorted(new_perms - old_perms)
+                removed = sorted(old_perms - new_perms)
+                if added:
+                    desc_parts.append(f'Added permissions: {", ".join(added)}')
+                if removed:
+                    desc_parts.append(f'Removed permissions: {", ".join(removed)}')
             
             if changes:
+                description = f'Updated user group: {instance.display_name}'
+                if desc_parts:
+                    description += ' — ' + '; '.join(desc_parts)
+
                 AuditLog.log_action(
                     user=getattr(instance, '_current_user', None),
                     action='UPDATE',
                     model_instance=instance,
-                    description=f'Updated user group: {instance.display_name}',
+                    description=description,
                     changes=changes,
                     success=True
                 )
@@ -171,7 +198,7 @@ def log_user_changes(sender, instance, created, **kwargs):
             user=getattr(instance, '_current_user', None),
             action='CREATE',
             model_instance=instance,
-            description=f'Created user: {instance.get_full_name()}',
+            description=f'Created user: {instance.get_full_name()} (username: {instance.username}, email: {instance.email})',
             changes=changes,
             success=True
         )
@@ -182,24 +209,69 @@ def log_user_changes(sender, instance, created, **kwargs):
             old_data = _pre_save_instances[key]
             
             changes = {}
+            desc_parts = []
             for field in ['username', 'email', 'first_name', 'last_name', 'title', 
                           'phone_number', 'is_approved', 'is_active']:
                 old_val = old_data.get(field)
                 new_val = getattr(instance, field)
                 if old_val != new_val:
                     changes[field] = [old_val, new_val]
+                    label = field.replace('_', ' ').title()
+                    desc_parts.append(f'{label}: {old_val} → {new_val}')
             
             if changes:
+                description = f'Updated user: {instance.get_full_name()}'
+                if desc_parts:
+                    description += ' — ' + '; '.join(desc_parts)
+
                 AuditLog.log_action(
                     user=getattr(instance, '_current_user', None),
                     action='UPDATE',
                     model_instance=instance,
-                    description=f'Updated user: {instance.get_full_name()}',
+                    description=description,
                     changes=changes,
                     success=True
                 )
             
             del _pre_save_instances[key]
+
+
+# ==================== USER GROUPS M2M TRACKING ====================
+
+@receiver(m2m_changed, sender=CustomUser.user_groups.through)
+def log_user_groups_changed(sender, instance, action, pk_set, **kwargs):
+    """Track when roles are assigned to or removed from users"""
+    if action == 'post_add' and pk_set:
+        groups = UserGroup.objects.filter(pk__in=pk_set)
+        group_names = sorted([g.display_name or g.name for g in groups])
+        AuditLog.log_action(
+            user=getattr(instance, '_current_user', None),
+            action='UPDATE',
+            model_instance=instance,
+            description=f'Assigned roles to {instance.get_full_name()}: {", ".join(group_names)}',
+            changes={'roles_added': [None, group_names]},
+            success=True
+        )
+    elif action == 'post_remove' and pk_set:
+        groups = UserGroup.objects.filter(pk__in=pk_set)
+        group_names = sorted([g.display_name or g.name for g in groups])
+        AuditLog.log_action(
+            user=getattr(instance, '_current_user', None),
+            action='UPDATE',
+            model_instance=instance,
+            description=f'Removed roles from {instance.get_full_name()}: {", ".join(group_names)}',
+            changes={'roles_removed': [None, group_names]},
+            success=True
+        )
+    elif action == 'post_clear':
+        AuditLog.log_action(
+            user=getattr(instance, '_current_user', None),
+            action='UPDATE',
+            model_instance=instance,
+            description=f'Cleared all roles from {instance.get_full_name()}',
+            changes={'roles_cleared': [True, None]},
+            success=True
+        )
 
 
 # ==================== PRESENTATION MODELS ====================
@@ -245,12 +317,16 @@ if PRESENTATION_MODELS_AVAILABLE:
                 'supervisors': [None, supervisors_names],
                 'school': [None, instance.school.name if hasattr(instance, 'school') and instance.school else 'N/A'],
             }
+
+            desc = f'Created presentation: {instance.research_title[:50]}'
+            if instance.student:
+                desc += f' by {instance.student.get_full_name()}'
             
             AuditLog.log_action(
                 user=getattr(instance, '_current_user', instance.student),
                 action='CREATE',
                 model_instance=instance,
-                description=f'Created presentation: {instance.research_title[:50]}',
+                description=desc,
                 changes=changes,
                 success=True
             )
@@ -260,12 +336,16 @@ if PRESENTATION_MODELS_AVAILABLE:
                 old_data = _pre_save_instances[key]
                 
                 changes = {}
+                desc_parts = []
                 if old_data['research_title'] != instance.research_title:
                     changes['research_title'] = [old_data['research_title'], instance.research_title]
+                    desc_parts.append(f'Title: {old_data["research_title"][:30]} → {instance.research_title[:30]}')
                 if old_data['status'] != instance.status:
                     changes['status'] = [old_data['status'], instance.status]
+                    desc_parts.append(f'Status: {old_data["status"]} → {instance.status}')
                 if old_data['scheduled_date'] != (str(instance.scheduled_date) if instance.scheduled_date else None):
                     changes['scheduled_date'] = [old_data['scheduled_date'], str(instance.scheduled_date) if instance.scheduled_date else 'Not scheduled']
+                    desc_parts.append(f'Date: {old_data["scheduled_date"] or "Not set"} → {str(instance.scheduled_date) if instance.scheduled_date else "Not scheduled"}')
 
                 # Resolve current instance location similarly to how we captured the original
                 inst_location = None
@@ -279,13 +359,18 @@ if PRESENTATION_MODELS_AVAILABLE:
 
                 if old_data.get('location') != inst_location:
                     changes['location'] = [old_data.get('location') or 'Not set', inst_location or 'Not set']
+                    desc_parts.append(f'Location: {old_data.get("location") or "Not set"} → {inst_location or "Not set"}')
                 
                 if changes:
+                    description = f'Updated presentation: {instance.research_title[:50]}'
+                    if desc_parts:
+                        description += ' — ' + '; '.join(desc_parts)
+
                     AuditLog.log_action(
                         user=getattr(instance, '_current_user', None),
                         action='UPDATE',
                         model_instance=instance,
-                        description=f'Updated presentation: {instance.research_title[:50]}',
+                        description=description,
                         changes=changes,
                         success=True
                     )
@@ -355,8 +440,9 @@ if PRESENTATION_MODELS_AVAILABLE:
             except Exception:
                 pres_title = 'N/A'
 
+            examiner_name = instance.examiner.get_full_name() if instance.examiner else 'N/A'
             changes = {
-                'examiner': [None, instance.examiner.get_full_name() if instance.examiner else 'N/A'],
+                'examiner': [None, examiner_name],
                 'presentation': [None, pres_title],
                 'status': [None, instance.status],
             }
@@ -365,7 +451,7 @@ if PRESENTATION_MODELS_AVAILABLE:
                 user=getattr(instance, '_current_user', None),
                 action='ASSIGN',
                 model_instance=instance,
-                description=f'Assigned examiner: {instance.examiner.get_full_name() if instance.examiner else "N/A"}',
+                description=f'Assigned examiner {examiner_name} to presentation: {pres_title}',
                 changes=changes,
                 success=True
             )
@@ -375,17 +461,25 @@ if PRESENTATION_MODELS_AVAILABLE:
                 old_data = _pre_save_instances[key]
                 
                 changes = {}
+                desc_parts = []
                 if old_data['status'] != instance.status:
                     changes['status'] = [old_data['status'], instance.status]
+                    desc_parts.append(f'Status: {old_data["status"]} → {instance.status}')
                 if old_data.get('is_confirmed') != getattr(instance, 'is_confirmed', None):
                     changes['is_confirmed'] = [old_data.get('is_confirmed'), getattr(instance, 'is_confirmed', None)]
+                    desc_parts.append(f'Confirmed: {old_data.get("is_confirmed")} → {getattr(instance, "is_confirmed", None)}')
                 
                 if changes:
+                    examiner_name = instance.examiner.get_full_name() if instance.examiner else 'N/A'
+                    description = f'Updated examiner assignment: {examiner_name}'
+                    if desc_parts:
+                        description += ' — ' + '; '.join(desc_parts)
+
                     AuditLog.log_action(
                         user=getattr(instance, '_current_user', None),
                         action='UPDATE',
                         model_instance=instance,
-                        description=f'Updated examiner assignment: {instance.examiner.get_full_name() if instance.examiner else "N/A"}',
+                        description=description,
                         changes=changes,
                         success=True
                     )
@@ -397,16 +491,18 @@ if PRESENTATION_MODELS_AVAILABLE:
     def log_supervisor_assignment_changes(sender, instance, created, **kwargs):
         """Log SupervisorAssignment changes"""
         if created:
+            supervisor_name = instance.supervisor.get_full_name() if instance.supervisor else 'N/A'
+            student_name = instance.student.get_full_name() if instance.student else 'N/A'
             changes = {
-                'supervisor': [None, instance.supervisor.get_full_name() if instance.supervisor else 'N/A'],
-                'student': [None, instance.student.get_full_name() if instance.student else 'N/A'],
+                'supervisor': [None, supervisor_name],
+                'student': [None, student_name],
             }
             
             AuditLog.log_action(
                 user=getattr(instance, '_current_user', None),
                 action='ASSIGN',
                 model_instance=instance,
-                description=f'Assigned supervisor: {instance.supervisor.get_full_name() if instance.supervisor else "N/A"}',
+                description=f'Assigned supervisor {supervisor_name} to student {student_name}',
                 changes=changes,
                 success=True
             )
@@ -431,17 +527,25 @@ if PRESENTATION_MODELS_AVAILABLE:
     def log_presentation_assignment_changes(sender, instance, created, **kwargs):
         """Log PresentationAssignment changes"""
         if created:
+            coordinator_name = instance.coordinator.get_full_name() if instance.coordinator else 'N/A'
+            pres_title = instance.presentation.research_title[:50] if instance.presentation else 'N/A'
+            moderator_name = instance.session_moderator.get_full_name() if instance.session_moderator else 'Not assigned'
             changes = {
-                'coordinator': [None, instance.coordinator.get_full_name() if instance.coordinator else 'N/A'],
-                'presentation': [None, instance.presentation.research_title[:50] if instance.presentation else 'N/A'],
-                'session_moderator': [None, instance.session_moderator.get_full_name() if instance.session_moderator else 'Not assigned'],
+                'coordinator': [None, coordinator_name],
+                'presentation': [None, pres_title],
+                'session_moderator': [None, moderator_name],
             }
             
+            desc = f'Created presentation assignment for: {pres_title}'
+            desc += f' — Coordinator: {coordinator_name}'
+            if instance.session_moderator:
+                desc += f'; Moderator: {moderator_name}'
+
             AuditLog.log_action(
                 user=getattr(instance, '_current_user', None),
                 action='CREATE',
                 model_instance=instance,
-                description=f'Created presentation assignment for: {instance.presentation.research_title[:50] if instance.presentation else "N/A"}',
+                description=desc,
                 changes=changes,
                 success=True
             )

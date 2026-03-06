@@ -121,6 +121,10 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
         """Provide all data needed to build the request form in one call"""
         user = request.user
         
+        # Fetch system settings for supervisor/examiner limits
+        from apps.users.models import SystemSettings
+        sys_settings = SystemSettings.get_settings()
+
         # Get users with supervisor or examiner roles (always available)
         supervisors = CustomUser.objects.filter(
             user_groups__name='supervisor', 
@@ -140,6 +144,15 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
             is_active=True,
             is_approved=True
         ).distinct()
+
+        # Common settings payload
+        settings_data = {
+            'min_supervisors': sys_settings.min_supervisors,
+            'max_supervisors': sys_settings.max_supervisors,
+            'min_examiners': sys_settings.min_examiners,
+            'max_examiners': sys_settings.max_examiners,
+            'allow_concurrent_presentations': sys_settings.allow_concurrent_presentations,
+        }
         
         # For coordinators, return supervisors, examiners, and moderators
         if user.user_groups.filter(name='coordinator').exists():
@@ -147,6 +160,7 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
                 'supervisors': BasicUserSerializer(supervisors, many=True).data,
                 'examiners': BasicUserSerializer(examiners, many=True).data,
                 'moderators': BasicUserSerializer(moderators, many=True).data,
+                'settings': settings_data,
             })
         
         # For students, return full form data
@@ -167,6 +181,12 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
 
         existing_requests = PresentationRequest.objects.filter(student=user)
 
+        # Check if student has an active (non-completed, non-rejected, non-cancelled) presentation
+        has_active_presentation = PresentationRequest.objects.filter(
+            student=user,
+            status__in=['draft', 'submitted', 'accepted', 'scheduled']
+        ).exists()
+
         return Response({
             'programme_level': profile.programme_level,
             'available_types': PresentationTypeSerializer(type_qs, many=True).data,
@@ -174,7 +194,9 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
             'supervisors': BasicUserSerializer(supervisors, many=True).data,
             'examiners': BasicUserSerializer(examiners, many=True).data,
             'existing_requests': PresentationRequestSerializer(existing_requests, many=True, context=self.get_serializer_context()).data,
-            'student_supervisor_id': str(profile.supervisor.id) if profile.supervisor else None
+            'student_supervisor_id': str(profile.supervisor.id) if profile.supervisor else None,
+            'settings': settings_data,
+            'has_active_presentation': has_active_presentation,
         })
 
     @action(detail=True, methods=['post'], url_path='confirm-examiners')

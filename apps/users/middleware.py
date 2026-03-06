@@ -18,6 +18,8 @@ class AuditLoggingMiddleware(MiddlewareMixin):
         '/media/',
         '/favicon.ico',
         '/api/notifications/notifications/unread_count/',  # Too frequent
+        '/api/presentations/proposal-evaluations/',         # Not needed in logs
+        '/api/presentations/phd-proposal-evaluations/',     # Not needed in logs
     ]
     
     # Methods to log
@@ -80,7 +82,7 @@ class AuditLoggingMiddleware(MiddlewareMixin):
                     error_message = f"HTTP {response.status_code}"
             
             # Create description
-            description = f"{request.method} {request.path}"
+            description = self.build_description(request.method, request.path, model_name, object_id, success)
             
             # Create audit log
             AuditLog.objects.create(
@@ -152,3 +154,52 @@ class AuditLoggingMiddleware(MiddlewareMixin):
             object_id = parts[3]
         
         return (model_name, object_id)
+
+    @staticmethod
+    def build_description(method, path, model_name, object_id, success):
+        """Build a human-readable description from request details"""
+        # Friendly model names for display
+        display_names = {
+            'CustomUser': 'user',
+            'UserGroup': 'user group',
+            'PresentationRequest': 'presentation',
+            'PresentationAssignment': 'presentation assignment',
+            'ExaminerAssignment': 'examiner assignment',
+            'SupervisorAssignment': 'supervisor assignment',
+            'Notification': 'notification',
+            'School': 'school',
+            'Programme': 'programme',
+            'Report': 'report',
+        }
+        friendly = display_names.get(model_name, model_name.lower())
+
+        # Detect custom action names from the URL (e.g. /api/users/users/5/approve/)
+        parts = [p for p in path.split('/') if p]
+        custom_action = None
+        if len(parts) >= 5 and not parts[4].isdigit():
+            custom_action = parts[4].replace('-', ' ').replace('_', ' ')
+        elif len(parts) >= 4 and not parts[3].isdigit():
+            custom_action = parts[3].replace('-', ' ').replace('_', ' ')
+
+        if custom_action:
+            target = f' {friendly} #{object_id}' if object_id else f' {friendly}'
+            return f'{custom_action.capitalize()}{target}'
+
+        action_verbs = {
+            'POST': 'Created',
+            'PUT': 'Updated',
+            'PATCH': 'Updated',
+            'DELETE': 'Deleted',
+            'GET': 'Viewed',
+        }
+        verb = action_verbs.get(method, method)
+
+        if object_id:
+            desc = f'{verb} {friendly} #{object_id}'
+        else:
+            desc = f'{verb} {friendly}'
+
+        if not success:
+            desc += ' (failed)'
+
+        return desc

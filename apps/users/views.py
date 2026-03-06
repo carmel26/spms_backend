@@ -1056,6 +1056,8 @@ Academic Progress Report Management System Team
         """Update user with proper error handling"""
         partial = kwargs.pop('partial', True)  # Default to partial update
         instance = self.get_object()
+        # Tag the instance so signals know who made the change
+        instance._current_user = request.user
         data = request.data.copy()
         
         # Track if user is being approved (was not approved before, now being approved)
