@@ -280,6 +280,65 @@ class ExaminerAssignmentSerializer(serializers.ModelSerializer):
         }
 
 
+class SupervisorAssignmentSerializer(serializers.ModelSerializer):
+    """Serializer for supervisor assignments"""
+    supervisor_detail = BasicUserSerializer(source='supervisor', read_only=True)
+    presentation_detail = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SupervisorAssignment
+        fields = ['id', 'supervisor', 'supervisor_detail', 'status', 'acceptance_date',
+                  'decline_reason', 'presentation_detail']
+        read_only_fields = ['id', 'acceptance_date']
+
+    def get_presentation_detail(self, obj):
+        """Get detailed presentation info"""
+        presentation = obj.assignment.presentation
+        student = presentation.student
+        student_profile = getattr(student, 'student_profile', None)
+
+        school_name = ''
+        programme_name = ''
+        if student.school:
+            school_name = student.school.name
+        if student.programme:
+            programme_name = student.programme.name
+
+        supervisors = []
+        for supervisor in presentation.supervisors.all():
+            supervisors.append({
+                'id': str(supervisor.id),
+                'name': supervisor.get_full_name_with_title(),
+                'email': supervisor.email
+            })
+
+        presentation_type_detail = None
+        if presentation.presentation_type:
+            presentation_type_detail = {
+                'id': str(presentation.presentation_type.id),
+                'name': presentation.presentation_type.name,
+                'programme_type': presentation.presentation_type.programme_type,
+            }
+
+        return {
+            'id': str(presentation.id),
+            'research_title': presentation.research_title,
+            'student_name': student.get_full_name_with_title(),
+            'student_registration_number': student.registration_number or '',
+            'student_school': school_name,
+            'student_programme': programme_name,
+            'proposed_date': presentation.proposed_date,
+            'actual_date': presentation.actual_date or presentation.scheduled_date,
+            'status': presentation.status,
+            'supervisors': supervisors,
+            'presentation_type_detail': presentation_type_detail,
+            'student_profile': (
+                StudentProfileSerializer(student_profile).data
+                if student_profile else None
+            ),
+        }
+
+
 class FormSerializer(serializers.ModelSerializer):
     """Serializer for the Form model that stores JSON payloads."""
     created_by_detail = BasicUserSerializer(source='created_by', read_only=True)

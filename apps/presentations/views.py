@@ -10,6 +10,7 @@ from apps.presentations.models import (
     PresentationRequest, 
     PresentationAssignment, 
     ExaminerAssignment,
+    SupervisorAssignment,
     ExaminerChangeHistory,
     PresentationAssessment,
     PresentationSchedule
@@ -19,6 +20,7 @@ from apps.presentations.serializers import (
     PresentationTypeSerializer,
     BasicUserSerializer,
     ExaminerAssignmentSerializer,
+    SupervisorAssignmentSerializer,
     ExaminerChangeHistorySerializer,
     FormSerializer,
     PhdAssessmentItemSerializer,
@@ -327,6 +329,12 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
         
         # Keep declined examiners for audit trail, only remove non-declined assignments
         # This preserves the history of who declined and why
+        # Track existing non-declined examiner IDs before deleting so we know who is new
+        existing_examiner_ids = set(
+            assignment.examiner_assignments
+            .exclude(status='declined')
+            .values_list('examiner_id', flat=True)
+        )
         assignment.examiner_assignments.exclude(status='declined').delete()
         
         # Create new examiner assignments and send notifications
@@ -355,15 +363,16 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
                 examiner_assignment.save()
                 created_assignments.append(examiner_assignment)
             
-            # Send notification to examiner
-            try:
-                send_examiner_assignment_notification(
-                    examiner=examiner,
-                    presentation_request=presentation,
-                    assigned_by=user
-                )
-            except Exception as e:
-                print(f"Failed to send notification to examiner {examiner.id}: {e}")
+            # Send notification only to newly assigned examiners (not existing ones)
+            if examiner.id not in existing_examiner_ids:
+                try:
+                    send_examiner_assignment_notification(
+                        examiner=examiner,
+                        presentation_request=presentation,
+                        assigned_by=user
+                    )
+                except Exception as e:
+                    print(f"Failed to send notification to examiner {examiner.id}: {e}")
         
         # Update presentation to confirmed examiners
         presentation.proposed_examiners.set(examiners)
@@ -407,6 +416,113 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
         
         serializer = ExaminerAssignmentSerializer(assignments, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='my-supervisor-assignments')
+    def my_supervisor_assignments(self, request):
+        """Get supervisor assignments for the current user (or all for admin)"""
+        user = request.user
+        is_admin = user.is_admin() if hasattr(user, 'is_admin') else False
+        is_admin = is_admin or user.is_superuser
+
+        is_supervisor = user.user_groups.filter(name='supervisor').exists()
+        if not is_supervisor and not is_admin:
+            return Response(
+                {'detail': 'Only supervisors can view their assignments.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if is_admin:
+            assignments = SupervisorAssignment.objects.all()
+        else:
+            assignments = SupervisorAssignment.objects.filter(supervisor=user)
+
+        assignments = assignments.select_related(
+            'assignment__presentation',
+            'assignment__presentation__student',
+            'assignment__presentation__student__school',
+            'assignment__presentation__student__programme',
+            'supervisor'
+        ).prefetch_related('assignment__presentation__supervisors')
+
+        serializer = SupervisorAssignmentSerializer(assignments, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='respond-supervisor-assignment')
+    def respond_to_supervisor_assignment(self, request, pk=None):
+        """Accept or decline a supervisor assignment"""
+        user = request.user
+
+        is_supervisor = user.user_groups.filter(name='supervisor').exists()
+        if not is_supervisor:
+            return Response(
+                {'detail': 'Only supervisors can respond to supervision assignments.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        try:
+            assignment = SupervisorAssignment.objects.get(id=pk, supervisor=user)
+        except SupervisorAssignment.DoesNotExist:
+            return Response(
+                {'detail': 'Supervisor assignment not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        response_status = request.data.get('status')
+        decline_reason = request.data.get('decline_reason', '')
+
+        if response_status not in ['accepted', 'declined']:
+            return Response(
+                {'detail': 'Status must be either "accepted" or "declined".'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if response_status == 'declined' and not decline_reason:
+            return Response(
+                {'detail': 'Decline reason is required when declining an assignment.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        assignment.status = response_status
+        if response_status == 'accepted':
+            assignment.acceptance_date = timezone.now()
+            assignment.decline_reason = None
+        else:
+            assignment.decline_reason = decline_reason
+            assignment.acceptance_date = None
+        assignment.save()
+
+        # Mark related notification as read
+        from apps.notifications.models import Notification
+        presentation = assignment.assignment.presentation
+        try:
+            Notification.objects.filter(
+                recipient=user,
+                presentation=presentation,
+                notification_type='supervisor_assignment',
+                is_read=False
+            ).update(is_read=True, read_at=timezone.now())
+        except Exception as e:
+            print(f"Failed to mark notification as read: {e}")
+
+        # Notify the coordinator
+        coordinator = assignment.assignment.coordinator
+        if coordinator and response_status == 'declined':
+            try:
+                from apps.notifications.models import Notification as Notif
+                Notif.objects.create(
+                    recipient=coordinator,
+                    presentation=presentation,
+                    notification_type='supervisor_response',
+                    title=f'Supervisor {user.get_full_name()} declined supervision',
+                    message=f'{user.get_full_name()} has declined the supervision assignment for "{presentation.research_title}". Reason: {decline_reason}',
+                )
+            except Exception as e:
+                print(f"Failed to notify coordinator: {e}")
+
+        return Response({
+            'message': f'Supervision assignment {response_status} successfully.',
+            'assignment': SupervisorAssignmentSerializer(assignment).data
+        })
 
     @action(detail=True, methods=['post'], url_path='respond-assignment')
     def respond_to_assignment(self, request, pk=None):
@@ -653,6 +769,98 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
             'presentation_id': str(presentation.id)
         })
 
+    @action(detail=True, methods=['get'], url_path='evaluation-results')
+    def evaluation_results(self, request, pk=None):
+        """Return aggregated evaluation results for a completed presentation.
+
+        The response includes a summary (average mark, count, approval status)
+        and individual evaluation breakdowns extracted from Form objects with
+        name in ('proposal_evaluation', 'phd_proposal_evaluation').
+        """
+        presentation = self.get_object()
+        user = request.user
+
+        # Only the student who owns the presentation, coordinators, or admins
+        is_student_owner = (
+            user.is_student() and presentation.student == user
+        )
+        is_coordinator = user.user_groups.filter(name='coordinator').exists()
+        is_admin = user.user_groups.filter(name='admin').exists()
+
+        if not (is_student_owner or is_coordinator or is_admin):
+            return Response(
+                {'detail': 'You do not have permission to view these results.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Gather evaluation forms linked to this presentation
+        eval_forms = PresentationForm.objects.filter(
+            presentation=presentation,
+            name__in=['proposal_evaluation', 'phd_proposal_evaluation'],
+        ).select_related('created_by').order_by('created_at')
+
+        # Total examiners assigned (from assignment, if exists)
+        total_examiners = 0
+        if hasattr(presentation, 'assignment') and presentation.assignment:
+            total_examiners = presentation.assignment.examiner_assignments.count()
+
+        evaluations = []
+        total_final_score = 0.0
+
+        for form in eval_forms:
+            data = form.data or {}
+            report_score = data.get('report_score')
+            oral_score = data.get('oral_presentation_score')
+            final_score = data.get('final_score')
+            proposal_status = data.get('proposal_status', '')
+
+            # Map proposal_status to a friendlier label for display
+            examiner_name = (
+                form.created_by.get_full_name()
+                if form.created_by
+                else 'Unknown Examiner'
+            )
+
+            eval_entry = {
+                'examiner_name': examiner_name,
+                'report_score': report_score,
+                'oral_presentation_score': oral_score,
+                'final_score': final_score,
+                'proposal_status': proposal_status,
+            }
+            evaluations.append(eval_entry)
+
+            if final_score is not None:
+                try:
+                    total_final_score += float(final_score)
+                except (ValueError, TypeError):
+                    pass
+
+        evaluations_submitted = len(evaluations)
+        average_mark = (
+            total_final_score / evaluations_submitted
+            if evaluations_submitted > 0
+            else 0
+        )
+
+        # Determine approval status
+        if evaluations_submitted == 0:
+            approval_status = 'pending'
+        elif evaluations_submitted < total_examiners:
+            approval_status = 'pending'
+        else:
+            # All evaluations submitted — approved if average >= 60%
+            approval_status = 'approved' if average_mark >= 60 else 'not_approved'
+
+        return Response({
+            'summary': {
+                'average_mark': round(average_mark, 2),
+                'evaluations_submitted': evaluations_submitted,
+                'total_examiners': total_examiners,
+                'approval_status': approval_status,
+            },
+            'evaluations': evaluations,
+        })
 
 
 class FormViewSet(viewsets.ModelViewSet):
@@ -744,7 +952,7 @@ class FormViewSet(viewsets.ModelViewSet):
         email_sent = False
         try:
             data = getattr(instance, 'data', {}) or {}
-            sel = data.get('selected_supervisor') or data.get('selected_supervisors')
+            sel = data.get('selected_supervisor') or data.get('selected_supervisors') or data.get('all_supervisors')
             logger.info('='*60)
             logger.info(f'📋 FORM CREATED - Processing email notification')
             logger.info(f'RAW DATA OBJECT: {data}')
@@ -893,7 +1101,7 @@ class FormViewSet(viewsets.ModelViewSet):
         
         try:
             data = getattr(instance, 'data', {}) or {}
-            sel = data.get('selected_supervisor') or data.get('selected_supervisors')
+            sel = data.get('selected_supervisor') or data.get('selected_supervisors') or data.get('all_supervisors')
             
             if sel:
                 from apps.users.models import CustomUser
@@ -1743,8 +1951,12 @@ class SupervisorStudentsView(APIView):
             
             # Get examiner feedback/comments if exists
             examiner_feedback = []
-            if presentation.assignment:
-                for ea in presentation.assignment.examiner_assignments.all():
+            try:
+                assignment = presentation.assignment
+            except Exception:
+                assignment = None
+            if assignment:
+                for ea in assignment.examiner_assignments.all():
                     if ea.decline_reason or ea.status != 'pending':
                         examiner_feedback.append({
                             'examiner_name': ea.examiner.get_full_name_with_title(),
@@ -2123,10 +2335,8 @@ class ModeratorPresentationsView(APIView):
         from datetime import date
         today = date.today()
         
-        presentations = PresentationRequest.objects.filter(
+        common_qs = PresentationRequest.objects.filter(
             status__in=['scheduled', 'completed', 'cancelled'],
-            scheduled_date__lte=today
-            # scheduled_date__gte=today
         ).select_related(
             'student',
             'presentation_type',
@@ -2139,6 +2349,13 @@ class ModeratorPresentationsView(APIView):
             'assignment__examiner_assignments',
             'assignment__examiner_assignments__examiner'
         ).order_by('-created_at')
+
+        if is_moderator and not is_admin:
+            # Moderators see ALL their assigned sessions (past + upcoming)
+            presentations = common_qs.filter(assignment__session_moderator=user)
+        else:
+            # Admins see only past/today sessions (global view)
+            presentations = common_qs.filter(scheduled_date__lte=today)
         
         # Serialize the data
         results = []
@@ -2228,6 +2445,15 @@ class ValidatePresentationView(APIView):
         logger = logging.getLogger(__name__)
         logger.info(f"Validating presentation ID: {presentation.id} for student: {presentation.student.id}")
         
+        # Moderators can only validate presentations assigned to them
+        if is_moderator and not (is_admin or is_dean):
+            assignment = getattr(presentation, 'assignment', None)
+            if not assignment or assignment.session_moderator != user:
+                return Response(
+                    {'detail': 'You can only validate presentations assigned to you as session moderator.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
         # Check validation count restriction for moderators
         # After 2 validations, only admin or dean can modify
         if is_moderator and not (is_admin or is_dean):
