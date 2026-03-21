@@ -170,15 +170,26 @@ def send_examiner_assignment_notification(examiner, presentation_request, assign
     return n
 
 
-def send_examiner_response_notification(coordinator, presentation_request, examiner, status, decline_reason=None):
+def send_examiner_response_notification(coordinator, presentation_request, examiner, status, decline_reason=None, is_late_decline=False):
     if status == 'accepted':
         title = 'Examiner Accepted Assignment'
         message = f'{examiner.get_full_name()} has accepted the examiner assignment for "{presentation_request.research_title}".'
     else:
-        title = 'Examiner Declined Assignment - Action Required'
-        message = f'{examiner.get_full_name()} has declined the examiner assignment for "{presentation_request.research_title}".'
-        if decline_reason:
-            message += f'\nReason: {decline_reason}\nPlease assign a different examiner.'
+        if is_late_decline:
+            title = 'URGENT: Late Examiner Decline - Reassignment Needed'
+            message = (
+                f'{examiner.get_full_name()} has declined the examiner assignment for '
+                f'"{presentation_request.research_title}" AFTER the scheduled date has passed.\n'
+                f'Scheduled date: {presentation_request.scheduled_date}\n'
+            )
+            if decline_reason:
+                message += f'Reason: {decline_reason}\n'
+            message += 'URGENT: Please reassign a replacement examiner immediately.'
+        else:
+            title = 'Examiner Declined Assignment - Action Required'
+            message = f'{examiner.get_full_name()} has declined the examiner assignment for "{presentation_request.research_title}".'
+            if decline_reason:
+                message += f'\nReason: {decline_reason}\nPlease assign a different examiner.'
 
     return create_notification(
         recipient=coordinator,
@@ -277,14 +288,14 @@ def send_supervisor_assignment_notification(supervisor, presentation_request, as
     return notification
 
 # -------------------------------
-def send_session_moderator_assignment_notification(moderator, session, assigned_by):
+def send_session_moderator_assignment_notification(moderator, presentation_request, assigned_by):
     """
-    Notify a session moderator that they have been assigned to a session.
+    Notify a session moderator that they have been assigned to a presentation session.
     """
     title = "Session Moderator Assignment"
     message = (
-        f"You have been assigned as a moderator for the session: "
-        f"'{session.title}' by {session.presenter.get_full_name()}."
+        f"You have been assigned as session moderator for the presentation: "
+        f"'{presentation_request.research_title}' by {presentation_request.student.get_full_name()}."
     )
 
     notification = create_notification(
@@ -292,18 +303,17 @@ def send_session_moderator_assignment_notification(moderator, session, assigned_
         title=title,
         message=message,
         notification_type='session_moderator_assignment',
-        obj=session,
+        obj=presentation_request,
         related_user=assigned_by
     )
 
-    # Optional: send email
     _send_email(
         recipient=moderator,
         subject=title,
         message=message,
         template_prefix='session_moderator_assignment',
         context={
-            'session': session,
+            'presentation': presentation_request,
             'moderator': moderator,
             'assigned_by': assigned_by,
             'frontend_url': getattr(settings, 'FRONTEND_URL', 'http://localhost:4200'),
@@ -485,3 +495,78 @@ def _send_email(recipient, subject, message, template_prefix=None, context=None)
         logger.info('Email sent to %s subject=%s', to_emails, subject)
     except Exception as e:
         logger.exception('Failed to send email to %s: %s', getattr(recipient, 'email', None), e)
+
+
+# -------------------------------
+def send_exam_officer_decision_notification(presentation_request, exam_officer, decision, comments=''):
+    """
+    Notify relevant parties about the examination officer's decision.
+    Notifies: student, coordinator, supervisors.
+    """
+    notifications = []
+    
+    if decision == 'approved':
+        title = 'Presentation Approved by Examination Officer'
+        student_msg = f'Your presentation "{presentation_request.research_title}" has been approved by the Examination Officer.'
+    else:
+        title = 'Presentation Rejected by Examination Officer'
+        student_msg = f'Your presentation "{presentation_request.research_title}" has been rejected by the Examination Officer.'
+    
+    if comments:
+        student_msg += f'\nComments: {comments}'
+    
+    # Notify student
+    n = create_notification(
+        recipient=presentation_request.student,
+        title=title,
+        message=student_msg,
+        notification_type='exam_officer_decision',
+        obj=presentation_request,
+        related_user=exam_officer
+    )
+    notifications.append(n)
+    
+    # Notify coordinator
+    try:
+        assignment = presentation_request.assignment
+        if assignment and assignment.coordinator:
+            coord_msg = (
+                f'Examination Officer {exam_officer.get_full_name()} has {decision} '
+                f'the presentation "{presentation_request.research_title}" '
+                f'by {presentation_request.student.get_full_name()}.'
+            )
+            if comments:
+                coord_msg += f'\nComments: {comments}'
+            
+            n2 = create_notification(
+                recipient=assignment.coordinator,
+                title=title,
+                message=coord_msg,
+                notification_type='exam_officer_decision',
+                obj=presentation_request,
+                related_user=exam_officer
+            )
+            notifications.append(n2)
+    except Exception as e:
+        print(f"Failed to notify coordinator: {e}")
+    
+    # Notify supervisors
+    for supervisor in presentation_request.supervisors.all():
+        try:
+            sup_msg = (
+                f'Examination Officer has {decision} the presentation '
+                f'"{presentation_request.research_title}" by {presentation_request.student.get_full_name()}.'
+            )
+            n3 = create_notification(
+                recipient=supervisor,
+                title=title,
+                message=sup_msg,
+                notification_type='exam_officer_decision',
+                obj=presentation_request,
+                related_user=exam_officer
+            )
+            notifications.append(n3)
+        except Exception as e:
+            print(f"Failed to notify supervisor: {e}")
+    
+    return notifications

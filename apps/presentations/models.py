@@ -131,6 +131,46 @@ class PresentationRequest(models.Model):
                  "After 2 validations, only admin or dean can modify."
     )
     
+    # Examination Officer approval fields
+    EXAM_OFFICER_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+    exam_officer_status = models.CharField(
+        max_length=20,
+        choices=EXAM_OFFICER_STATUS_CHOICES,
+        default='pending',
+        blank=True,
+        null=True,
+        help_text="Examination officer approval status"
+    )
+    exam_officer_comments = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Examination officer's comments on approval"
+    )
+    exam_officer_reviewed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the examination officer reviewed this presentation"
+    )
+    exam_officer_reviewed_by = models.ForeignKey(
+        'users.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='exam_officer_reviewed_presentations',
+        help_text="Examination officer who reviewed this presentation"
+    )
+    average_mark = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Average mark from all examiner evaluations"
+    )
+    
     class Meta:
         db_table = 'presentation_requests'
         ordering = ['-created_at']

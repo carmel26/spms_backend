@@ -15,6 +15,7 @@ urlpatterns = [
     path('', include(router.urls)),
     # Custom action endpoints (these need to be explicit paths for custom actions)
     path('me/', views.UserViewSet.as_view({'get': 'me'}), name='user-me'),
+    path('my-profile/', views.UserViewSet.as_view({'get': 'my_profile', 'post': 'my_profile', 'patch': 'my_profile', 'put': 'my_profile'}), name='user-my-profile'),
     path('register/', views.UserViewSet.as_view({'post': 'register'}), name='user-register'),
     path('login/', views.UserViewSet.as_view({'post': 'login'}), name='user-login'),
     path('change-password/', views.UserViewSet.as_view({'post': 'change_password'}), name='user-change-password'),
@@ -23,6 +24,7 @@ urlpatterns = [
     path('supervisor_dashboard/', views.UserViewSet.as_view({'get': 'supervisor_dashboard'}), name='user-supervisor-dashboard'),
     path('coordinator_dashboard/', views.UserViewSet.as_view({'get': 'coordinator_dashboard'}), name='user-coordinator-dashboard'),
     path('examiner_dashboard/', views.UserViewSet.as_view({'get': 'examiner_dashboard'}), name='user-examiner-dashboard'),
+    path('exam_officer_dashboard/', views.UserViewSet.as_view({'get': 'exam_officer_dashboard'}), name='user-exam-officer-dashboard'),
     path('admission_dashboard/', views.UserViewSet.as_view({'get': 'admission_dashboard'}), name='user-admission-dashboard'),
     path('admin_dashboard/', views.UserViewSet.as_view({'get': 'admin_dashboard'}), name='user-admin-dashboard'),
     path('<str:pk>/approve/', views.UserViewSet.as_view({'post': 'approve'}), name='user-approve'),

@@ -12,7 +12,9 @@ from apps.presentations.views import (
     AllStudentsReportView,
     ModeratorPresentationsView,
     ValidatePresentationView,
-    PresentationsReportView
+    PresentationsReportView,
+    ExamOfficerPresentationsView,
+    ExamOfficerApproveView,
 )
 
 router = DefaultRouter()
@@ -31,4 +33,6 @@ urlpatterns = [
     path('reports/presentations/', PresentationsReportView.as_view(), name='presentations-report'),
     path('moderator/presentations/', ModeratorPresentationsView.as_view(), name='moderator-presentations'),
     path('moderator/validate/<uuid:pk>/', ValidatePresentationView.as_view(), name='validate-presentation'),
+    path('exam-officer/presentations/', ExamOfficerPresentationsView.as_view(), name='exam-officer-presentations'),
+    path('exam-officer/approve/<uuid:pk>/', ExamOfficerApproveView.as_view(), name='exam-officer-approve'),
 ]

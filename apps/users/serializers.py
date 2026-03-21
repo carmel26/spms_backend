@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import CustomUser, StudentProfile, SupervisorProfile, ExaminerProfile, CoordinatorProfile, UserGroup, SystemSettings, AuditLog
+from .models import CustomUser, StudentProfile, SupervisorProfile, ExaminerProfile, CoordinatorProfile, UserGroup, SystemSettings, AuditLog, UserProfile
 
 
 class UserGroupSerializer(serializers.ModelSerializer):
@@ -44,6 +44,8 @@ class CustomUserSerializer(serializers.ModelSerializer):
     coordinator_profiles = serializers.SerializerMethodField()
     student_profile = serializers.SerializerMethodField()
     has_student_profile = serializers.SerializerMethodField()
+    user_profile = serializers.SerializerMethodField()
+    has_user_profile = serializers.SerializerMethodField()
     
     class Meta:
         model = CustomUser
@@ -55,6 +57,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
             'school', 'programme', 'is_active', 'is_approved', 'approved_date', 
             'supervisor_profiles', 'examiner_profiles', 'coordinator_profiles', 
             'student_profile', 'has_student_profile',
+            'user_profile', 'has_user_profile',
             'password', 'last_login_date', 'date_created'
         ]
         read_only_fields = ['id', 'date_created', 'last_login_date', 'approved_by', 'roles_display']
@@ -103,6 +106,22 @@ class CustomUserSerializer(serializers.ModelSerializer):
     def get_has_student_profile(self, obj):
         """Check if user has a student profile"""
         return hasattr(obj, 'student_profile') and obj.student_profile is not None
+    
+    def get_user_profile(self, obj):
+        """Get non-student user profile if exists"""
+        if hasattr(obj, 'user_profile'):
+            try:
+                return UserProfileSerializer(obj.user_profile).data
+            except Exception:
+                return None
+        return None
+    
+    def get_has_user_profile(self, obj):
+        """Check if user has a (non-student) user profile"""
+        try:
+            return hasattr(obj, 'user_profile') and obj.user_profile is not None
+        except Exception:
+            return False
     
     def validate_email(self, value):
         """Ensure email is unique"""
@@ -323,6 +342,28 @@ class StudentProfileDetailSerializer(serializers.ModelSerializer):
         if prog:
             return {'id': str(prog.id), 'name': prog.name}
         return None
+
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    """Serializer for non-student UserProfile (personal info, contact, next of kin)"""
+    user_name = serializers.CharField(source='user.get_full_name_with_title', read_only=True)
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+
+    class Meta:
+        model = UserProfile
+        fields = [
+            'id', 'user', 'user_name', 'user_email',
+            # personal
+            'gender', 'birth_date', 'nationality',
+            # contact
+            'contact_mobile', 'contact_email_secondary', 'address',
+            # professional
+            'department', 'specialization', 'bio',
+            # next of kin
+            'nok_name', 'nok_mobile', 'nok_relation',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'user', 'user_name', 'user_email', 'created_at', 'updated_at']
 
 
 class LoginSerializer(serializers.Serializer):

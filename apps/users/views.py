@@ -555,6 +555,45 @@ Best regards,
         """Get current user"""
         serializer = self.get_serializer(request.user)
         return Response(serializer.data)
+
+    # ── Non-student user profile (create / read / update) ──────────
+    @action(detail=False, methods=['get', 'post', 'patch', 'put'], url_path='my-profile')
+    def my_profile(self, request):
+        """Get, create, or update the authenticated user's personal profile.
+        
+        Students should use the StudentProfile endpoint instead.
+        All other roles share a single UserProfile record.
+        """
+        from apps.users.models import UserProfile
+        from apps.users.serializers import UserProfileSerializer
+
+        user = request.user
+
+        if request.method == 'GET':
+            try:
+                profile = user.user_profile
+            except UserProfile.DoesNotExist:
+                return Response({'detail': 'Profile not found. You can create one via POST.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response(UserProfileSerializer(profile).data)
+
+        if request.method == 'POST':
+            if UserProfile.objects.filter(user=user).exists():
+                return Response({'detail': 'Profile already exists. Use PATCH to update.'}, status=status.HTTP_400_BAD_REQUEST)
+            serializer = UserProfileSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(user=user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        # PATCH / PUT
+        try:
+            profile = user.user_profile
+        except UserProfile.DoesNotExist:
+            return Response({'detail': 'Profile not found. Create one first via POST.'}, status=status.HTTP_404_NOT_FOUND)
+        partial = request.method == 'PATCH'
+        serializer = UserProfileSerializer(profile, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
     
     @action(detail=False, methods=['post'])
     def change_password(self, request):
@@ -1048,6 +1087,116 @@ Academic Progress Report Management System Team
             'completed_assessments': completed_evaluations,
             'pending_evaluations': pending_evaluations,
             'total_evaluations': completed_evaluations,
+        })
+
+    @action(detail=False, methods=['get'])
+    def exam_officer_dashboard(self, request):
+        """Get examination officer dashboard stats.
+
+        Requires the ``exam_officer_approval`` permission, the
+        ``dashboard_examination_officer`` permission, the
+        ``examination_officer`` role, or admin privileges.
+        """
+        user = request.user
+        has_perm = (
+            user.has_permission('exam_officer_approval')
+            or user.has_permission('dashboard_examination_officer')
+            or user.has_role('examination_officer')
+            or user.is_admin()
+            or user.is_superuser
+        )
+        if not has_perm:
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+
+        from apps.presentations.models import (
+            Form as PresentationForm,
+        )
+        from django.db.models import Avg, Count
+
+        # All presentations (system-wide overview)
+        all_presentations = PresentationRequest.objects.all()
+        total_presentations = all_presentations.count()
+        pending_presentations = all_presentations.filter(status='submitted').count()
+        accepted_presentations = all_presentations.filter(status='accepted').count()
+        scheduled_presentations = all_presentations.filter(status='scheduled').count()
+        completed_presentations = all_presentations.filter(status='completed').count()
+        rejected_presentations = all_presentations.filter(status='rejected').count()
+
+        # Exam officer approval-specific stats
+        eligible = PresentationRequest.objects.filter(
+            status__in=['completed', 'scheduled'],
+            moderator_validation_status='approved',
+        ) | PresentationRequest.objects.filter(
+            exam_officer_status__in=['approved', 'rejected'],
+        )
+        eligible = eligible.distinct()
+
+        eo_total = eligible.count()
+        eo_pending = eligible.filter(exam_officer_status='pending').count()
+        eo_approved = eligible.filter(exam_officer_status='approved').count()
+        eo_rejected = eligible.filter(exam_officer_status='rejected').count()
+
+        # Average mark of approved presentations
+        avg_mark = eligible.filter(
+            exam_officer_status='approved',
+            average_mark__isnull=False,
+        ).aggregate(avg=Avg('average_mark'))['avg']
+
+        # Students overview
+        total_students = StudentProfile.objects.count()
+        active_students = StudentProfile.objects.filter(is_active_student=True).count()
+
+        # Presentations by programme level
+        masters_count = all_presentations.filter(
+            student__student_profile__programme_level='masters'
+        ).count()
+        phd_count = all_presentations.filter(
+            student__student_profile__programme_level='phd'
+        ).count()
+
+        # Recent activity — last 5 approved/rejected
+        recent_reviews = (
+            PresentationRequest.objects.filter(
+                exam_officer_status__in=['approved', 'rejected'],
+                exam_officer_reviewed_at__isnull=False,
+            )
+            .select_related('student', 'presentation_type', 'exam_officer_reviewed_by')
+            .order_by('-exam_officer_reviewed_at')[:5]
+        )
+        recent_list = []
+        for pr in recent_reviews:
+            recent_list.append({
+                'id': str(pr.id),
+                'student_name': pr.student.get_full_name_with_title(),
+                'research_title': pr.research_title,
+                'presentation_type': pr.presentation_type.name if pr.presentation_type else '',
+                'status': pr.exam_officer_status,
+                'reviewed_at': pr.exam_officer_reviewed_at,
+                'average_mark': float(pr.average_mark) if pr.average_mark else None,
+            })
+
+        return Response({
+            # System-wide overview
+            'total_presentations': total_presentations,
+            'pending_presentations': pending_presentations,
+            'accepted_presentations': accepted_presentations,
+            'scheduled_presentations': scheduled_presentations,
+            'completed_presentations': completed_presentations,
+            'rejected_presentations': rejected_presentations,
+            # Exam officer approval pipeline
+            'eo_total': eo_total,
+            'eo_pending': eo_pending,
+            'eo_approved': eo_approved,
+            'eo_rejected': eo_rejected,
+            'eo_average_mark': round(float(avg_mark), 2) if avg_mark else None,
+            # Students
+            'total_students': total_students,
+            'active_students': active_students,
+            # By programme
+            'masters_presentations': masters_count,
+            'phd_presentations': phd_count,
+            # Recent reviews
+            'recent_reviews': recent_list,
         })
     
     @action(detail=False, methods=['get'])

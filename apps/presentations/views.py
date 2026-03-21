@@ -69,13 +69,35 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
             'assignment',
             'assignment__session_moderator',
             'assignment__examiner_assignments',
-            'assignment__examiner_assignments__examiner'
+            'assignment__examiner_assignments__examiner',
+            'assignment__supervisor_assignments',
+            'assignment__supervisor_assignments__supervisor'
         )
 
-        # Students see only their own requests; admins/others see all
-        if user.is_student():
-            qs = qs.filter(student=user)
-        return qs
+        roles = set(user.user_groups.values_list('name', flat=True))
+
+        # Admin, coordinator, examination_officer see ALL presentations
+        if roles & {'admin', 'coordinator', 'examination_officer'}:
+            return qs
+
+        # Students see only their own requests
+        if 'student' in roles:
+            return qs.filter(student=user)
+
+        # Build a filter for each non-admin role the user holds
+        role_q = Q()
+        if 'supervisor' in roles:
+            role_q |= Q(supervisors=user) | Q(assignment__supervisor_assignments__supervisor=user)
+        if 'examiner' in roles:
+            role_q |= Q(assignment__examiner_assignments__examiner=user)
+        if 'moderator' in roles:
+            role_q |= Q(assignment__session_moderator=user)
+
+        if role_q:
+            return qs.filter(role_q).distinct()
+
+        # Fallback: no recognised role → empty
+        return qs.none()
 
     def perform_create(self, serializer):
         instance = serializer.save()
@@ -590,6 +612,13 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
         presentation = assignment.assignment.presentation
         coordinator = assignment.assignment.coordinator
         
+        # Check if this is a late decline (after scheduled date)
+        is_late_decline = False
+        if response_status == 'declined' and presentation.scheduled_date:
+            from datetime import date
+            if presentation.scheduled_date <= date.today():
+                is_late_decline = True
+        
         # Send notification to the coordinator who created the assignment
         if coordinator:
             try:
@@ -598,7 +627,8 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
                     presentation_request=presentation,
                     examiner=user,
                     status=response_status,
-                    decline_reason=decline_reason if response_status == 'declined' else None
+                    decline_reason=decline_reason if response_status == 'declined' else None,
+                    is_late_decline=is_late_decline
                 )
             except Exception as e:
                 print(f"Failed to send notification to coordinator {coordinator.id}: {e}")
@@ -619,17 +649,22 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
                             presentation_request=presentation,
                             examiner=user,
                             status=response_status,
-                            decline_reason=decline_reason
+                            decline_reason=decline_reason,
+                            is_late_decline=is_late_decline
                         )
                     except Exception as e:
                         print(f"Failed to send notification to coordinator {coord.id}: {e}")
             except Exception as e:
                 print(f"Failed to notify additional coordinators: {e}")
         
-        return Response({
+        response_data = {
             'message': f'Assignment {response_status} successfully.',
             'assignment': ExaminerAssignmentSerializer(assignment).data
-        })
+        }
+        if is_late_decline:
+            response_data['warning'] = 'This is a late decline (after scheduled date). The coordinator has been notified urgently to reassign.'
+        
+        return Response(response_data)
 
     @action(detail=True, methods=['post'], url_path='submit-assessment')
     def submit_assessment(self, request, pk=None):
@@ -2074,10 +2109,11 @@ class ExaminerStudentsView(APIView):
                     'remaining_presentations': remaining_count,
                 }
             
-            # Get all forms submitted for this presentation
+            # Get evaluation forms for this presentation (only eval forms, not student progress forms)
             from apps.presentations.models import Form as PresentationForm
             forms = PresentationForm.objects.filter(
-                presentation=presentation
+                presentation=presentation,
+                name__in=['proposal_evaluation', 'phd_proposal_evaluation']
             ).order_by('-created_at')
             
             forms_data = []
@@ -2109,11 +2145,13 @@ class ExaminerStudentsView(APIView):
                 'id': str(presentation.id),
                 'research_title': presentation.research_title,
                 'presentation_type': presentation.presentation_type.name,
+                'programme_type': presentation.presentation_type.programme_type if presentation.presentation_type else 'unknown',
                 'status': presentation.status,
                 'proposed_date': presentation.proposed_date,
                 'scheduled_date': presentation.scheduled_date,
                 'submission_date': presentation.submission_date,
                 'created_at': presentation.created_at,
+                'examiner_assignment_id': str(ea.id),
                 'assignment_status': ea.status,
                 'my_decline_reason': ea.decline_reason,
                 'forms': forms_data,
@@ -2147,21 +2185,23 @@ class AllStudentsReportView(APIView):
     def get(self, request):
         user = request.user
         
-        # Admin/coordinator can see all (matches frontend permission logic)
+        # Admin/coordinator/supervisor/examination_officer can see all
         is_admin = user.user_groups.filter(name='admin').exists()
         is_coordinator = user.user_groups.filter(name='coordinator').exists()
+        is_supervisor = user.user_groups.filter(name='supervisor').exists()
+        is_exam_officer = user.user_groups.filter(name='examination_officer').exists()
         
-        # Check if user has view_all_students permission
+        # Check if user has view_all_students or exam_officer_approval permission
         user_groups = user.user_groups.all()
         has_permission = False
         for group in user_groups:
             perms = group.permissions or []
-            if 'view_all_students' in perms:
+            if 'view_all_students' in perms or 'exam_officer_approval' in perms:
                 has_permission = True
                 break
         
-        # Only admins, coordinators, or users with the permission can access
-        if not (is_admin or is_coordinator or has_permission):
+        # Admins, coordinators, supervisors, exam officers, or users with the permission can access
+        if not (is_admin or is_coordinator or is_supervisor or is_exam_officer or has_permission):
             return Response(
                 {'detail': 'You do not have permission to view all students.'}, 
                 status=status.HTTP_403_FORBIDDEN
@@ -2759,5 +2799,224 @@ class PresentationsReportView(APIView):
             'total_pages': (total_count + page_size - 1) // page_size if total_count > 0 else 1,
             'statistics': stats,
             'presentations': results
+        })
+
+
+class ExamOfficerPresentationsView(APIView):
+    """
+    View for examination officers to see presentations that need their approval.
+    Shows presentations where moderator has validated (took_place) and all evaluations are submitted.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        
+        has_perm = user.has_permission('exam_officer_approval')
+        is_admin = user.user_groups.filter(name='admin').exists()
+        
+        if not (has_perm or is_admin):
+            return Response(
+                {'detail': 'Only examination officers can access this.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Get presentations that are completed/scheduled and moderator validated as "took place"
+        # These are the ones ready for exam officer review
+        presentations = PresentationRequest.objects.filter(
+            status__in=['completed', 'scheduled'],
+        ).select_related(
+            'student',
+            'presentation_type',
+            'student__student_profile',
+            'student__school',
+            'student__programme',
+            'exam_officer_reviewed_by',
+        ).prefetch_related(
+            'assignment',
+            'assignment__session_moderator',
+            'assignment__examiner_assignments',
+            'assignment__examiner_assignments__examiner',
+        ).order_by('-created_at')
+
+        # Filter: moderator must have validated as "approved" (took place)
+        # OR the exam officer has already reviewed it
+        presentations = presentations.filter(
+            Q(moderator_validation_status='approved') |
+            Q(exam_officer_status__in=['approved', 'rejected'])
+        )
+
+        results = []
+        for presentation in presentations:
+            student = presentation.student
+            student_profile = getattr(student, 'student_profile', None)
+            assignment = getattr(presentation, 'assignment', None)
+            
+            # Get examiner assignments with evaluation status
+            examiner_data = []
+            has_all_evaluations = True
+            total_marks = []
+            
+            if assignment:
+                for ea in assignment.examiner_assignments.all():
+                    # Check if this examiner has submitted an evaluation form
+                    from apps.presentations.models import Form as PresentationForm
+                    eval_form = PresentationForm.objects.filter(
+                        presentation=presentation,
+                        name__in=['proposal_evaluation', 'phd_proposal_evaluation'],
+                        created_by=ea.examiner
+                    ).first()
+                    
+                    has_evaluation = eval_form is not None
+                    final_score = None
+                    if has_evaluation and eval_form.data:
+                        # Extract final score from form data
+                        form_data = eval_form.data if isinstance(eval_form.data, dict) else {}
+                        final_score = form_data.get('final_score') or form_data.get('finalScore')
+                        if final_score is not None:
+                            try:
+                                total_marks.append(float(final_score))
+                            except (ValueError, TypeError):
+                                pass
+                    
+                    if ea.status == 'accepted' and not has_evaluation:
+                        has_all_evaluations = False
+                    
+                    examiner_data.append({
+                        'id': str(ea.id),
+                        'examiner_name': ea.examiner.get_full_name_with_title(),
+                        'examiner_email': ea.examiner.email,
+                        'status': ea.status,
+                        'has_evaluation': has_evaluation,
+                        'final_score': final_score,
+                    })
+            
+            # Calculate average mark
+            avg_mark = sum(total_marks) / len(total_marks) if total_marks else None
+            
+            results.append({
+                'id': str(presentation.id),
+                'student_name': student.get_full_name_with_title(),
+                'student_email': student.email,
+                'student_registration_number': student.registration_number or '',
+                'student_programme_level': student_profile.programme_level if student_profile else None,
+                'student_school': student.school.name if student.school else '',
+                'student_programme': student.programme.name if student.programme else '',
+                'research_title': presentation.research_title,
+                'presentation_type': {
+                    'id': str(presentation.presentation_type.id),
+                    'name': presentation.presentation_type.name,
+                } if presentation.presentation_type else None,
+                'status': presentation.status,
+                'scheduled_date': presentation.scheduled_date,
+                'moderator_validation_status': presentation.moderator_validation_status,
+                'moderator_validated_at': presentation.moderator_validated_at,
+                'exam_officer_status': presentation.exam_officer_status or 'pending',
+                'exam_officer_comments': presentation.exam_officer_comments or '',
+                'exam_officer_reviewed_at': presentation.exam_officer_reviewed_at,
+                'exam_officer_reviewed_by': presentation.exam_officer_reviewed_by.get_full_name_with_title() if presentation.exam_officer_reviewed_by else None,
+                'average_mark': float(presentation.average_mark) if presentation.average_mark else avg_mark,
+                'examiners': examiner_data,
+                'has_all_evaluations': has_all_evaluations,
+            })
+        
+        # Stats
+        total = len(results)
+        pending = sum(1 for r in results if r['exam_officer_status'] == 'pending')
+        approved = sum(1 for r in results if r['exam_officer_status'] == 'approved')
+        rejected = sum(1 for r in results if r['exam_officer_status'] == 'rejected')
+        
+        return Response({
+            'presentations': results,
+            'stats': {
+                'total': total,
+                'pending': pending,
+                'approved': approved,
+                'rejected': rejected,
+            }
+        })
+
+
+class ExamOfficerApproveView(APIView):
+    """Approve or reject a presentation as an examination officer"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        
+        has_perm = user.has_permission('exam_officer_approval')
+        is_admin = user.user_groups.filter(name='admin').exists()
+        
+        if not (has_perm or is_admin):
+            return Response(
+                {'detail': 'Only examination officers can approve presentations.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            presentation = PresentationRequest.objects.get(id=pk)
+        except PresentationRequest.DoesNotExist:
+            return Response(
+                {'detail': 'Presentation not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        decision = request.data.get('decision')  # 'approved' or 'rejected'
+        comments = request.data.get('comments', '')
+        
+        if decision not in ['approved', 'rejected']:
+            return Response(
+                {'detail': 'Decision must be "approved" or "rejected".'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Update presentation
+        presentation.exam_officer_status = decision
+        presentation.exam_officer_comments = comments
+        presentation.exam_officer_reviewed_at = timezone.now()
+        presentation.exam_officer_reviewed_by = user
+        
+        # Calculate and save average mark from evaluations
+        assignment = getattr(presentation, 'assignment', None)
+        if assignment:
+            from apps.presentations.models import Form as PresentationForm
+            total_marks = []
+            for ea in assignment.examiner_assignments.all():
+                eval_form = PresentationForm.objects.filter(
+                    presentation=presentation,
+                    name__in=['proposal_evaluation', 'phd_proposal_evaluation'],
+                    created_by=ea.examiner
+                ).first()
+                if eval_form and eval_form.data:
+                    form_data = eval_form.data if isinstance(eval_form.data, dict) else {}
+                    final_score = form_data.get('final_score') or form_data.get('finalScore')
+                    if final_score is not None:
+                        try:
+                            total_marks.append(float(final_score))
+                        except (ValueError, TypeError):
+                            pass
+            
+            if total_marks:
+                from decimal import Decimal
+                presentation.average_mark = Decimal(str(sum(total_marks) / len(total_marks)))
+        
+        presentation.save()
+        
+        # Send notifications
+        try:
+            from apps.notifications.utils import send_exam_officer_decision_notification
+            send_exam_officer_decision_notification(
+                presentation_request=presentation,
+                exam_officer=user,
+                decision=decision,
+                comments=comments
+            )
+        except Exception as e:
+            print(f"Failed to send exam officer notification: {e}")
+        
+        return Response({
+            'message': f'Presentation {decision} successfully.',
+            'exam_officer_status': decision,
+            'average_mark': float(presentation.average_mark) if presentation.average_mark else None,
         })
 

@@ -1,0 +1,15 @@
+Session Moderator Assignment
+
+Hello {% if honorific %}{{ honorific }} {% endif %}{{ moderator.get_full_name }},
+
+You have been assigned as the session moderator for the following presentation:
+
+Title: {{ presentation.research_title }}
+Student: {{ presentation.student.get_full_name }}
+{% if presentation.scheduled_date %}Scheduled date: {{ presentation.scheduled_date }}
+{% elif presentation.proposed_date %}Proposed date: {{ presentation.proposed_date }}
+{% endif %}
+
+Please log in to the system to view your moderation sessions: {{ frontend_url }}/moderator/validation
+
+This message was sent by Academic Progress Report Management System.

@@ -422,6 +422,46 @@ class StudentProfile(models.Model):
         return f"{self.user.get_full_name()} - {self.programme_level}"
 
 
+class UserProfile(models.Model):
+    """Personal profile for non-student users (supervisors, examiners, moderators, coordinators, exam officers, etc.).
+    
+    If a user has multiple roles they still get a single UserProfile visible across all roles.
+    Students use StudentProfile instead.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    user = models.OneToOneField(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name='user_profile'
+    )
+    # Personal information
+    gender = models.CharField(max_length=20, blank=True, null=True, help_text='Gender')
+    birth_date = models.DateField(null=True, blank=True)
+    nationality = models.CharField(max_length=100, blank=True, null=True)
+    # Contact information
+    contact_mobile = models.CharField(max_length=50, blank=True, null=True)
+    contact_email_secondary = models.EmailField(blank=True, null=True)
+    address = models.TextField(blank=True, null=True)
+    # Professional information
+    department = models.CharField(max_length=255, blank=True, null=True)
+    specialization = models.CharField(max_length=255, blank=True, null=True)
+    bio = models.TextField(blank=True, null=True, help_text='Short professional biography')
+    # Next of kin
+    nok_name = models.CharField(max_length=255, blank=True, null=True)
+    nok_mobile = models.CharField(max_length=50, blank=True, null=True)
+    nok_relation = models.CharField(max_length=100, blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'user_profiles'
+
+    def __str__(self):
+        return f"Profile: {self.user.get_full_name()}"
+
+
 class SupervisorProfile(models.Model):
     """Metadata for users with supervisor role - Can be multiple roles per user"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
