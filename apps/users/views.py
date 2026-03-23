@@ -1209,7 +1209,7 @@ Academic Progress Report Management System Team
         from apps.schools.models import School, Programme
         
         return Response({
-            'total_users': CustomUser.objects.count(),
+            'total_users': CustomUser.objects.filter(is_deleted=False).count(),
             'total_schools': School.objects.count(),
             'total_programmes': Programme.objects.count(),
             'total_presentations': PresentationRequest.objects.count(),
