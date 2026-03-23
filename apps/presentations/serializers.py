@@ -47,7 +47,7 @@ class BasicUserSerializer(serializers.ModelSerializer):
 class PresentationTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = PresentationType
-        fields = ['id', 'name', 'description', 'programme_type', 'duration_minutes', 'required_examiners']
+        fields = ['id', 'name', 'description','masters_priority', 'phd_priority', 'programme_type', 'duration_minutes', 'required_examiners']
         read_only_fields = ['id']
 
 
@@ -259,6 +259,8 @@ class ExaminerAssignmentSerializer(serializers.ModelSerializer):
                 'id': str(presentation.presentation_type.id),
                 'name': presentation.presentation_type.name,
                 'programme_type': presentation.presentation_type.programme_type,
+                'masters_priority': presentation.presentation_type.masters_priority,
+                'phd_priority': presentation.presentation_type.phd_priority,
             }
         
         return {
@@ -318,6 +320,8 @@ class SupervisorAssignmentSerializer(serializers.ModelSerializer):
                 'id': str(presentation.presentation_type.id),
                 'name': presentation.presentation_type.name,
                 'programme_type': presentation.presentation_type.programme_type,
+                'masters_priority': presentation.presentation_type.masters_priority,
+                'phd_priority': presentation.presentation_type.phd_priority,
             }
 
         return {

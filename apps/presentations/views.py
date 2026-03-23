@@ -1,4 +1,4 @@
-from django.db.models import Q, F
+from django.db.models import Q, F, Case, When, Value, IntegerField
 from django.utils import timezone
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
@@ -133,6 +133,17 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
             Q(programme_type='both') | Q(programme_type=profile.programme_level)
         ).exclude(id__in=blocked_type_ids)
 
+        # Sort by priority based on student's programme level
+        # Priority 0 means "not set" and should come last; non-zero sorted ascending
+        prio_field = 'phd_priority' if profile.programme_level == 'phd' else 'masters_priority'
+        type_qs = type_qs.annotate(
+            _sort_prio=Case(
+                When(**{prio_field: 0}, then=Value(999999)),
+                default=prio_field,
+                output_field=IntegerField(),
+            )
+        ).order_by('_sort_prio', 'name')
+
         data = {
             'programme_level': profile.programme_level,
             'available_types': PresentationTypeSerializer(type_qs, many=True).data,
@@ -202,6 +213,17 @@ class PresentationRequestViewSet(viewsets.ModelViewSet):
         type_qs = PresentationType.objects.filter(is_active=True).filter(
             Q(programme_type='both') | Q(programme_type=profile.programme_level)
         ).exclude(id__in=blocked_type_ids)
+
+        # Sort by priority based on student's programme level
+        # Priority 0 means "not set" and should come last; non-zero sorted ascending
+        prio_field = 'phd_priority' if profile.programme_level == 'phd' else 'masters_priority'
+        type_qs = type_qs.annotate(
+            _sort_prio=Case(
+                When(**{prio_field: 0}, then=Value(999999)),
+                default=prio_field,
+                output_field=IntegerField(),
+            )
+        ).order_by('_sort_prio', 'name')
 
         existing_requests = PresentationRequest.objects.filter(student=user)
 
@@ -1733,6 +1755,48 @@ class ProposalEvaluationViewSet(viewsets.ModelViewSet):
             name='proposal_evaluation',
             form_role='examiner'
         )
+        # Mark examiner assignment as completed if linked to a presentation
+        self._mark_assignment_completed(instance)
+
+    def _mark_assignment_completed(self, instance):
+        """Mark the examiner assignment as completed when evaluation is submitted."""
+        presentation_id = None
+        if instance.presentation_id:
+            presentation_id = instance.presentation_id
+        elif instance.data and isinstance(instance.data, dict):
+            presentation_id = instance.data.get('presentation_id')
+
+        if not presentation_id:
+            return
+
+        try:
+            examiner_assignment = ExaminerAssignment.objects.get(
+                assignment__presentation_id=presentation_id,
+                examiner=self.request.user,
+                status='accepted'
+            )
+            examiner_assignment.status = 'completed'
+            examiner_assignment.save(update_fields=['status'])
+
+            # Check if all examiners have completed their evaluations
+            assignment = examiner_assignment.assignment
+            all_completed = not assignment.examiner_assignments.exclude(
+                status='completed'
+            ).exists()
+
+            if all_completed:
+                presentation = assignment.presentation
+                if presentation.status != 'completed':
+                    presentation.status = 'completed'
+                    presentation.actual_date = timezone.now()
+                    presentation.save(update_fields=['status', 'actual_date'])
+                    StudentProfile.objects.filter(
+                        user=presentation.student
+                    ).update(
+                        completed_presentations=F('completed_presentations') + 1
+                    )
+        except ExaminerAssignment.DoesNotExist:
+            pass  # No matching assignment found, skip
 
     def perform_update(self, serializer):
         serializer.save()
@@ -1804,6 +1868,48 @@ class PhdProposalEvaluationViewSet(viewsets.ModelViewSet):
             name='phd_proposal_evaluation',
             form_role='examiner'
         )
+        # Mark examiner assignment as completed if linked to a presentation
+        self._mark_assignment_completed(instance)
+
+    def _mark_assignment_completed(self, instance):
+        """Mark the examiner assignment as completed when PhD evaluation is submitted."""
+        presentation_id = None
+        if instance.presentation_id:
+            presentation_id = instance.presentation_id
+        elif instance.data and isinstance(instance.data, dict):
+            presentation_id = instance.data.get('presentation_id')
+
+        if not presentation_id:
+            return
+
+        try:
+            examiner_assignment = ExaminerAssignment.objects.get(
+                assignment__presentation_id=presentation_id,
+                examiner=self.request.user,
+                status='accepted'
+            )
+            examiner_assignment.status = 'completed'
+            examiner_assignment.save(update_fields=['status'])
+
+            # Check if all examiners have completed their evaluations
+            assignment = examiner_assignment.assignment
+            all_completed = not assignment.examiner_assignments.exclude(
+                status='completed'
+            ).exists()
+
+            if all_completed:
+                presentation = assignment.presentation
+                if presentation.status != 'completed':
+                    presentation.status = 'completed'
+                    presentation.actual_date = timezone.now()
+                    presentation.save(update_fields=['status', 'actual_date'])
+                    StudentProfile.objects.filter(
+                        user=presentation.student
+                    ).update(
+                        completed_presentations=F('completed_presentations') + 1
+                    )
+        except ExaminerAssignment.DoesNotExist:
+            pass  # No matching assignment found, skip
 
     def perform_update(self, serializer):
         serializer.save()

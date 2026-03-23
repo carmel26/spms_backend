@@ -84,6 +84,14 @@ class PresentationType(models.Model):
     duration_minutes = models.IntegerField(default=60)
     required_examiners = models.IntegerField(default=2)
     is_active = models.BooleanField(default=True)
+    masters_priority = models.IntegerField(
+        default=0,
+        help_text='Display order for Masters students (lower = earlier). 0 means no specific order.'
+    )
+    phd_priority = models.IntegerField(
+        default=0,
+        help_text='Display order for PhD students (lower = earlier). 0 means no specific order.'
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:

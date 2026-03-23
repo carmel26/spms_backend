@@ -43,7 +43,8 @@ class PresentationTypeSerializer(serializers.ModelSerializer):
         model = PresentationType
         fields = [
             'id', 'name', 'description', 'programme_type',
-            'duration_minutes', 'required_examiners', 'is_active', 'created_at'
+            'duration_minutes', 'required_examiners', 'is_active',
+            'masters_priority', 'phd_priority', 'created_at'
         ]
         read_only_fields = ['id', 'created_at']
         extra_kwargs = {
@@ -51,5 +52,7 @@ class PresentationTypeSerializer(serializers.ModelSerializer):
             'description': {'required': False, 'allow_blank': True},
             'programme_type': {'required': True},
             'duration_minutes': {'required': False},
-            'required_examiners': {'required': False}
+            'required_examiners': {'required': False},
+            'masters_priority': {'required': False},
+            'phd_priority': {'required': False}
         }
