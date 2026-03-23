@@ -950,10 +950,10 @@ Academic Progress Report Management System Team
         
         if is_admin:
             # Admin sees all students and all presentation requests
-            students = StudentProfile.objects.all()
+            students = StudentProfile.objects.filter(user__is_deleted=False)
             all_requests = PresentationRequest.objects.all()
         else:
-            students = StudentProfile.objects.filter(supervisor=request.user)
+            students = StudentProfile.objects.filter(supervisor=request.user).filter(user__is_deleted=False)
             all_requests = PresentationRequest.objects.filter(student__in=students)
         
         total_students = students.count()
@@ -1143,8 +1143,8 @@ Academic Progress Report Management System Team
         ).aggregate(avg=Avg('average_mark'))['avg']
 
         # Students overview
-        total_students = StudentProfile.objects.count()
-        active_students = StudentProfile.objects.filter(is_active_student=True).count()
+        total_students = StudentProfile.objects.filter(user__is_deleted=False).count()
+        active_students = StudentProfile.objects.filter(is_active_student=True, user__is_deleted=False).count()
 
         # Presentations by programme level
         masters_count = all_presentations.filter(
@@ -1223,9 +1223,11 @@ Academic Progress Report Management System Team
             return Response({'error': 'Not a supervisor'}, status=status.HTTP_403_FORBIDDEN)
         
         if is_admin:
-            students = StudentProfile.objects.all()
+            students = StudentProfile.objects.filter(user__is_deleted=False)   
+            # students = StudentProfile.objects.all()  #hide deleted students from admin view
+            
         else:
-            students = StudentProfile.objects.filter(supervisor=request.user)
+            students = StudentProfile.objects.filter(supervisor=request.user).filter(user__is_deleted=False)
         from .serializers import StudentProfileDetailSerializer
         serializer = StudentProfileDetailSerializer(students, many=True)
         return Response(serializer.data)
@@ -1379,7 +1381,7 @@ Best regards,
 
 class StudentProfileViewSet(viewsets.ModelViewSet):
     """ViewSet for student profiles"""
-    queryset = StudentProfile.objects.all()
+    queryset = StudentProfile.objects.filter(user__is_deleted=False)
     serializer_class = StudentProfileSerializer
     permission_classes = [IsAuthenticated]
 

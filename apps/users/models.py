@@ -289,7 +289,7 @@ class SystemSettings(models.Model):
     # General Settings
     system_name = models.CharField(
         max_length=255,
-        default='Secure Progress Management System'
+        default='Academic Progress Report Management System'
     )
     system_email = models.EmailField(default='admin@nm-aist.ac.tz')
     system_url = models.URLField(default='http://localhost:4200')

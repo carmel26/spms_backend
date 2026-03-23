@@ -58,7 +58,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
             'supervisor_profiles', 'examiner_profiles', 'coordinator_profiles', 
             'student_profile', 'has_student_profile',
             'user_profile', 'has_user_profile',
-            'password', 'last_login_date', 'date_created'
+            'password', 'last_login_date', 'date_created', 'is_deleted',
         ]
         read_only_fields = ['id', 'date_created', 'last_login_date', 'approved_by', 'roles_display']
         extra_kwargs = {
@@ -295,7 +295,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'programme_level',
             'supervisor', 'supervisor_name', 'admission_year', 'enrollment_year',
-            'expected_graduation', 'is_active_student', 'is_admitted',
+            'expected_graduation', 'is_active_student', 'is_admitted', 
             'progress_percentage', 'total_presentations', 'completed_presentations',
             # personal
             'gender', 'birth_date', 'nationality',
