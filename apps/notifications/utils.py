@@ -570,3 +570,48 @@ def send_exam_officer_decision_notification(presentation_request, exam_officer, 
             print(f"Failed to notify supervisor: {e}")
     
     return notifications
+
+
+def send_evaluation_reminder_notification(examiner, presentation_request, requested_by):
+    """
+    Send a reminder to an examiner to submit their evaluation form for a presentation.
+    Sends both in-app notification and email.
+    """
+    title = 'Evaluation Submission Reminder'
+    message = (
+        f'This is a reminder to submit your evaluation for the presentation '
+        f'"{presentation_request.research_title}" by {presentation_request.student.get_full_name()}. '
+        f'The Examination Officer is waiting for all evaluations to be submitted before approving results. '
+        f'Please submit your evaluation form at your earliest convenience.'
+    )
+    if requested_by:
+        message += f'\n\nRequested by: {requested_by.get_full_name()}'
+
+    # Create in-app notification
+    notification = create_notification(
+        recipient=examiner,
+        title=title,
+        message=message,
+        notification_type='evaluation_reminder',
+        obj=presentation_request,
+        related_user=requested_by
+    )
+
+    # Send email
+    subject = f'[SPMS] Reminder: Submit Evaluation for "{presentation_request.research_title}"'
+    _send_email(examiner, subject, message)
+
+    # Log the reminder
+    try:
+        from apps.notifications.models import ReminderLog
+        ReminderLog.objects.create(
+            recipient=examiner,
+            presentation=presentation_request,
+            minutes_before=0,
+            channel='email',
+            status='sent'
+        )
+    except Exception as e:
+        logger.warning('Failed to log evaluation reminder: %s', e)
+
+    return notification

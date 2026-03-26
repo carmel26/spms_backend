@@ -1,3 +1,4 @@
+import uuid
 from django.db.models import Q, F, Case, When, Value, IntegerField
 from django.utils import timezone
 from rest_framework import viewsets, status, permissions
@@ -2625,6 +2626,21 @@ class ValidatePresentationView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        # --- Examiner response checks for "approved" (took place) ---
+        assignment = getattr(presentation, 'assignment', None)
+        if assignment:
+            examiner_assignments = assignment.examiner_assignments.all()
+            if examiner_assignments.exists():
+                # Check if all examiners have responded (accepted or declined)
+                unresponded = examiner_assignments.filter(status='assigned')
+                if unresponded.exists():
+                    unresponded_names = [ea.examiner.get_full_name_with_title() for ea in unresponded]
+                    return Response(
+                        {'detail': f'Cannot validate: the following examiner(s) have not responded yet: {", ".join(unresponded_names)}. '
+                                   f'All assigned examiners must accept or decline before validation.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+        
         decision = request.data.get('decision')  # 'approved' or 'did_not_take_place'
         comments = request.data.get('comments', '').strip()
         
@@ -2633,6 +2649,18 @@ class ValidatePresentationView(APIView):
                 {'detail': 'Decision must be "approved" (presentation took place) or "did_not_take_place".'}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
+        
+        # If any examiner declined, cannot approve (took place) — only "did_not_take_place" is allowed
+        if decision == 'approved' and assignment:
+            examiner_assignments = assignment.examiner_assignments.all()
+            declined = examiner_assignments.filter(status='declined')
+            if declined.exists():
+                declined_names = [ea.examiner.get_full_name_with_title() for ea in declined]
+                return Response(
+                    {'detail': f'Cannot confirm "Presentation Took Place" because the following examiner(s) declined: '
+                               f'{", ".join(declined_names)}. You may only mark this presentation as "Did Not Take Place".'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
         
         if not comments:
             return Response(
@@ -3067,27 +3095,94 @@ class ExamOfficerApproveView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        decision = request.data.get('decision')  # 'approved' or 'rejected'
+        decision = request.data.get('decision')  # 'approved', 'send_reminder', or 'revoke_approval'
         comments = request.data.get('comments', '')
         
-        if decision not in ['approved', 'rejected']:
+        # Handle revoking a previous approval (allowed before presentation starts)
+        if decision == 'revoke_approval':
+            if presentation.exam_officer_status != 'approved':
+                return Response(
+                    {'detail': 'No approval to revoke.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            # Check if presentation has started
+            schedule = getattr(presentation, 'schedule', None)
+            start_time = schedule.start_time if schedule else presentation.scheduled_date
+            if start_time and start_time <= timezone.now():
+                return Response(
+                    {'detail': 'Cannot revoke approval after the presentation has started.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            presentation.exam_officer_status = 'pending'
+            presentation.exam_officer_comments = comments or 'Approval revoked by examination officer.'
+            presentation.exam_officer_reviewed_at = timezone.now()
+            presentation.exam_officer_reviewed_by = user
+            presentation.save()
+            
+            return Response({
+                'message': 'Approval revoked successfully. Status reset to pending.',
+                'exam_officer_status': 'pending',
+            })
+        
+        # Handle reminder sending (replaces old "rejected" flow)
+        if decision == 'send_reminder':
+            assignment = getattr(presentation, 'assignment', None)
+            if not assignment:
+                return Response(
+                    {'detail': 'No assignment found for this presentation.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            from apps.presentations.models import Form as PresentationForm
+            reminder_targets = []
+            for ea in assignment.examiner_assignments.filter(status='accepted'):
+                eval_form = PresentationForm.objects.filter(
+                    presentation=presentation,
+                    name__in=['proposal_evaluation', 'phd_proposal_evaluation'],
+                    created_by=ea.examiner
+                ).first()
+                if not eval_form:
+                    reminder_targets.append(ea.examiner)
+            
+            if not reminder_targets:
+                return Response(
+                    {'detail': 'All accepted examiners have already submitted their evaluations.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Send reminder emails to examiners who haven't submitted
+            from apps.notifications.utils import send_evaluation_reminder_notification
+            sent_count = 0
+            for examiner in reminder_targets:
+                try:
+                    send_evaluation_reminder_notification(
+                        examiner=examiner,
+                        presentation_request=presentation,
+                        requested_by=user
+                    )
+                    sent_count += 1
+                except Exception as e:
+                    print(f"Failed to send reminder to {examiner.email}: {e}")
+            
+            return Response({
+                'message': f'Reminder sent to {sent_count} examiner(s) to submit their evaluations.',
+                'reminded_examiners': [e.get_full_name_with_title() for e in reminder_targets],
+            })
+        
+        if decision != 'approved':
             return Response(
-                {'detail': 'Decision must be "approved" or "rejected".'},
+                {'detail': 'Decision must be "approved", "send_reminder", or "revoke_approval".'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Update presentation
-        presentation.exam_officer_status = decision
-        presentation.exam_officer_comments = comments
-        presentation.exam_officer_reviewed_at = timezone.now()
-        presentation.exam_officer_reviewed_by = user
-        
-        # Calculate and save average mark from evaluations
+        # Enforce: all accepted examiners must have submitted evaluations
         assignment = getattr(presentation, 'assignment', None)
         if assignment:
             from apps.presentations.models import Form as PresentationForm
             total_marks = []
-            for ea in assignment.examiner_assignments.all():
+            pending_examiners = []
+            for ea in assignment.examiner_assignments.filter(status='accepted'):
                 eval_form = PresentationForm.objects.filter(
                     presentation=presentation,
                     name__in=['proposal_evaluation', 'phd_proposal_evaluation'],
@@ -3101,10 +3196,32 @@ class ExamOfficerApproveView(APIView):
                             total_marks.append(float(final_score))
                         except (ValueError, TypeError):
                             pass
+                    else:
+                        pending_examiners.append(ea.examiner.get_full_name_with_title())
+                else:
+                    pending_examiners.append(ea.examiner.get_full_name_with_title())
             
-            if total_marks:
-                from decimal import Decimal
-                presentation.average_mark = Decimal(str(sum(total_marks) / len(total_marks)))
+            if pending_examiners:
+                return Response(
+                    {'detail': f'Cannot approve: the following examiner(s) have not submitted their evaluations yet: '
+                               f'{", ".join(pending_examiners)}. Use "Send Reminder" to notify them.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if not total_marks:
+                return Response(
+                    {'detail': 'Cannot approve: no evaluation scores found. Both examiners must submit evaluations first.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            from decimal import Decimal
+            presentation.average_mark = Decimal(str(sum(total_marks) / len(total_marks)))
+        
+        # Update presentation
+        presentation.exam_officer_status = decision
+        presentation.exam_officer_comments = comments
+        presentation.exam_officer_reviewed_at = timezone.now()
+        presentation.exam_officer_reviewed_by = user
         
         presentation.save()
         
@@ -3126,3 +3243,294 @@ class ExamOfficerApproveView(APIView):
             'average_mark': float(presentation.average_mark) if presentation.average_mark else None,
         })
 
+
+class PresentationSessionView(APIView):
+    """
+    Create and manage multi-presenter sessions.
+    A session groups 1-N presenters with shared examiners, moderator, link, and venue.
+    Examiners must not be supervisors of any student in the session.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """List all sessions for the coordinator."""
+        user = request.user
+        is_coordinator = user.user_groups.filter(name='coordinator').exists()
+        is_admin = user.user_groups.filter(name='admin').exists()
+        
+        if not (is_coordinator or is_admin):
+            return Response({'detail': 'Only coordinators can view sessions.'}, status=status.HTTP_403_FORBIDDEN)
+        
+        from apps.presentations.models import PresentationSession
+        sessions = PresentationSession.objects.all().prefetch_related(
+            'presentations', 'presentations__student', 'presentations__supervisors',
+            'examiners', 'session_moderator', 'coordinator'
+        )
+        
+        results = []
+        for session in sessions:
+            presentations_data = []
+            for p in session.presentations.all():
+                presentations_data.append({
+                    'id': str(p.id),
+                    'student_name': p.student.get_full_name_with_title(),
+                    'research_title': p.research_title,
+                    'status': p.status,
+                    'supervisors': [
+                        {'id': str(s.id), 'name': s.get_full_name_with_title()}
+                        for s in p.supervisors.all()
+                    ]
+                })
+            
+            results.append({
+                'id': str(session.id),
+                'name': session.name,
+                'scheduled_date': session.scheduled_date,
+                'end_time': session.end_time,
+                'meeting_link': session.meeting_link,
+                'venue': session.venue,
+                'is_virtual': session.is_virtual,
+                'max_presenters': session.max_presenters,
+                'coordinator': session.coordinator.get_full_name_with_title() if session.coordinator else None,
+                'session_moderator': {
+                    'id': str(session.session_moderator.id),
+                    'name': session.session_moderator.get_full_name_with_title(),
+                } if session.session_moderator else None,
+                'examiners': [
+                    {'id': str(e.id), 'name': e.get_full_name_with_title()}
+                    for e in session.examiners.all()
+                ],
+                'presentations': presentations_data,
+                'presenter_count': len(presentations_data),
+            })
+        
+        return Response(results)
+
+    def post(self, request):
+        """Create a new multi-presenter session."""
+        user = request.user
+        is_coordinator = user.user_groups.filter(name='coordinator').exists()
+        is_admin = user.user_groups.filter(name='admin').exists()
+        
+        if not (is_coordinator or is_admin):
+            return Response({'detail': 'Only coordinators can create sessions.'}, status=status.HTTP_403_FORBIDDEN)
+        
+        presentation_ids = request.data.get('presentation_ids', [])
+        examiner_ids = request.data.get('examiner_ids', [])
+        session_moderator_id = request.data.get('session_moderator_id')
+        scheduled_date = request.data.get('scheduled_date')
+        meeting_link = request.data.get('meeting_link', '')
+        venue = request.data.get('venue', '')
+        session_name = request.data.get('name', '')
+        max_presenters = request.data.get('max_presenters', 3)
+        
+        if not presentation_ids:
+            return Response({'detail': 'At least one presentation must be selected.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not scheduled_date:
+            return Response({'detail': 'Scheduled date is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not examiner_ids or len(examiner_ids) < 2:
+            return Response({'detail': 'At least two examiners are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate max presenters
+        try:
+            max_presenters = int(max_presenters)
+        except (ValueError, TypeError):
+            max_presenters = 3
+        
+        if len(presentation_ids) > max_presenters:
+            return Response(
+                {'detail': f'Too many presenters. Maximum is {max_presenters} per session.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate presentations exist and are in acceptable status
+        presentations = PresentationRequest.objects.filter(
+            id__in=presentation_ids,
+            status__in=['submitted', 'accepted', 'scheduled']
+        )
+        
+        if presentations.count() != len(presentation_ids):
+            return Response(
+                {'detail': 'One or more presentations not found or not in a schedulable status.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate examiners exist
+        examiners = CustomUser.objects.filter(
+            id__in=examiner_ids,
+            user_groups__name='examiner',
+            is_active=True
+        ).distinct()
+        
+        if examiners.count() != len(examiner_ids):
+            return Response({'detail': 'One or more invalid examiner IDs.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate session moderator
+        session_moderator = None
+        if session_moderator_id:
+            try:
+                session_moderator = CustomUser.objects.get(id=session_moderator_id, is_active=True)
+            except CustomUser.DoesNotExist:
+                return Response({'detail': 'Invalid session moderator ID.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate that no examiner is a supervisor of any student in this session
+        all_supervisor_ids = set()
+        for p in presentations:
+            all_supervisor_ids.update(p.supervisors.values_list('id', flat=True))
+        
+        conflicts = []
+        for examiner in examiners:
+            if examiner.id in all_supervisor_ids:
+                # Find which student(s) they supervise
+                for p in presentations:
+                    if p.supervisors.filter(id=examiner.id).exists():
+                        conflicts.append(
+                            f'{examiner.get_full_name_with_title()} is a supervisor of '
+                            f'{p.student.get_full_name()} and cannot examine in this session.'
+                        )
+        
+        if conflicts:
+            return Response(
+                {'detail': 'Examiner-supervisor conflict detected.', 'conflicts': conflicts},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Parse date
+        from dateutil import parser
+        from datetime import timedelta
+        try:
+            parsed_dt = parser.parse(scheduled_date)
+        except Exception as e:
+            return Response({'detail': f'Invalid date format: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Create the session
+        from apps.presentations.models import PresentationSession
+        session = PresentationSession.objects.create(
+            name=session_name or f'Session - {parsed_dt.strftime("%Y-%m-%d %H:%M")}',
+            scheduled_date=parsed_dt,
+            end_time=parsed_dt + timedelta(hours=len(presentation_ids)),  # 1 hour per presenter
+            meeting_link=meeting_link,
+            venue=venue,
+            max_presenters=max_presenters,
+            coordinator=user,
+            session_moderator=session_moderator,
+        )
+        session.presentations.set(presentations)
+        session.examiners.set(examiners)
+        
+        # Now update each presentation: set status to scheduled, create assignments, etc.
+        from apps.notifications.utils import send_examiner_assignment_notification, send_session_moderator_assignment_notification
+        
+        for p in presentations:
+            p.scheduled_date = parsed_dt
+            p.actual_date = parsed_dt
+            p.status = 'scheduled'
+            p.proposed_examiners.set(examiners)
+            p.save()
+            
+            # Create or update presentation assignment
+            assignment, _ = PresentationAssignment.objects.get_or_create(
+                presentation=p,
+                defaults={'coordinator': user}
+            )
+            assignment.meeting_link = meeting_link
+            assignment.venue = venue
+            assignment.session_moderator = session_moderator
+            assignment.save()
+            
+            # Create examiner assignments for this presentation
+            assignment.examiner_assignments.exclude(status='declined').delete()
+            for examiner in examiners:
+                existing = assignment.examiner_assignments.filter(examiner=examiner).first()
+                if not existing or existing.status != 'declined':
+                    ExaminerAssignment.objects.get_or_create(
+                        assignment=assignment,
+                        examiner=examiner,
+                        defaults={'status': 'assigned'}
+                    )
+            
+            # Create or update schedule
+            PresentationSchedule.objects.update_or_create(
+                presentation=p,
+                defaults={
+                    'start_time': parsed_dt,
+                    'end_time': parsed_dt + timedelta(hours=1),
+                    'meeting_link': meeting_link,
+                    'venue': venue or '',
+                }
+            )
+        
+        # Send notifications to examiners
+        for examiner in examiners:
+            try:
+                # Notify about first presentation (they can see all in the session)
+                send_examiner_assignment_notification(
+                    examiner=examiner,
+                    presentation_request=presentations.first(),
+                    assigned_by=user
+                )
+            except Exception as e:
+                print(f"Failed to notify examiner {examiner.id}: {e}")
+        
+        # Notify session moderator
+        if session_moderator:
+            try:
+                send_session_moderator_assignment_notification(
+                    moderator=session_moderator,
+                    presentation_request=presentations.first(),
+                    assigned_by=user
+                )
+            except Exception as e:
+                print(f"Failed to notify moderator: {e}")
+        
+        return Response({
+            'message': f'Session created with {presentations.count()} presenter(s) and {examiners.count()} examiner(s).',
+            'session_id': str(session.id),
+            'presentations_count': presentations.count(),
+        }, status=status.HTTP_201_CREATED)
+
+
+class ValidateSessionExaminersView(APIView):
+    """
+    Check if proposed examiners have any conflicts with supervisors 
+    of the selected presentations in a session.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        presentation_ids = request.data.get('presentation_ids', [])
+        examiner_ids = request.data.get('examiner_ids', [])
+        
+        presentations = PresentationRequest.objects.filter(id__in=presentation_ids)
+        
+        all_supervisor_ids = set()
+        supervisor_map = {}  # examiner_id -> list of student names
+        
+        for p in presentations:
+            for sid in p.supervisors.values_list('id', flat=True):
+                all_supervisor_ids.add(sid)
+                if sid not in supervisor_map:
+                    supervisor_map[sid] = []
+                supervisor_map[sid].append(p.student.get_full_name())
+        
+        conflicts = []
+        for eid in examiner_ids:
+            try:
+                eid_uuid = uuid.UUID(str(eid))
+            except ValueError:
+                continue
+            if eid_uuid in all_supervisor_ids:
+                examiner = CustomUser.objects.get(id=eid_uuid)
+                students = supervisor_map.get(eid_uuid, [])
+                conflicts.append({
+                    'examiner_id': str(eid),
+                    'examiner_name': examiner.get_full_name_with_title(),
+                    'supervised_students': students,
+                })
+        
+        return Response({
+            'valid': len(conflicts) == 0,
+            'conflicts': conflicts,
+        })

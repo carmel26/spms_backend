@@ -120,3 +120,88 @@ class SendReminderView(APIView):
             total += 1
 
         return Response({"status": "reminders sent", "count": total})
+
+
+class BulkSessionReminderView(APIView):
+    """Send reminders to all participants of all scheduled sessions."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        has_perm = (
+            user.user_groups.filter(name__in=['coordinator', 'admin']).exists() or
+            user.has_permission('send_reminders')
+        )
+        if not has_perm:
+            return Response({'detail': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        # Get all scheduled presentations (upcoming)
+        now = timezone.now()
+        scheduled = PresentationRequest.objects.filter(
+            status='scheduled',
+            scheduled_date__gte=now
+        ).select_related('student')
+
+        total = 0
+        for pr in scheduled:
+            try:
+                send_presentation_reminders_to_all_actors(pr, minutes_before=0)
+                total += 1
+            except Exception as e:
+                print(f"Failed to send reminders for presentation {pr.id}: {e}")
+
+        return Response({
+            'status': 'bulk reminders sent',
+            'count': total,
+            'message': f'Reminders sent for {total} scheduled presentation(s).'
+        })
+
+
+class ReminderHistoryView(APIView):
+    """Get reminder history/log for the coordinator or admin."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        has_perm = (
+            user.user_groups.filter(name__in=['coordinator', 'admin']).exists() or
+            user.has_permission('send_reminders') or
+            user.has_permission('view_reminders')
+        )
+        if not has_perm:
+            return Response({'detail': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from .models import ReminderLog
+        page = int(request.GET.get('page', 1))
+        page_size = int(request.GET.get('page_size', 25))
+
+        logs = ReminderLog.objects.select_related(
+            'recipient', 'presentation', 'presentation__student'
+        ).order_by('-created_at')
+
+        total_count = logs.count()
+        start = (page - 1) * page_size
+        logs_page = logs[start:start + page_size]
+
+        results = []
+        for log in logs_page:
+            results.append({
+                'id': str(log.id),
+                'recipient_name': log.recipient.get_full_name_with_title() if log.recipient else 'Unknown',
+                'recipient_email': log.recipient.email if log.recipient else '',
+                'presentation_title': log.presentation.research_title if log.presentation else 'N/A',
+                'student_name': log.presentation.student.get_full_name() if log.presentation and log.presentation.student else 'N/A',
+                'channel': log.channel,
+                'status': log.status,
+                'error': log.error,
+                'minutes_before': log.minutes_before,
+                'created_at': log.created_at,
+            })
+
+        return Response({
+            'results': results,
+            'total': total_count,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': (total_count + page_size - 1) // page_size,
+        })

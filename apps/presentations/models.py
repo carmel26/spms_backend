@@ -180,6 +180,82 @@ class PresentationRequest(models.Model):
         return f"{base}: {self.research_title}" if self.research_title else base
 
 
+class PresentationSession(models.Model):
+    """
+    Groups multiple presentations into a single session.
+    One session = one link = one set of examiners = one moderator = up to N presenters.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=255, blank=True, default='', help_text="Optional session name/label")
+    scheduled_date = models.DateTimeField(help_text="Session start date/time")
+    end_time = models.DateTimeField(null=True, blank=True, help_text="Session end time")
+    meeting_link = models.URLField(blank=True, null=True, max_length=500)
+    venue = models.CharField(max_length=255, blank=True, null=True)
+    is_virtual = models.BooleanField(default=False)
+    max_presenters = models.PositiveIntegerField(default=3, help_text="Maximum presenters per session")
+    
+    coordinator = models.ForeignKey(
+        'users.CustomUser', on_delete=models.PROTECT,
+        related_name='coordinated_sessions'
+    )
+    session_moderator = models.ForeignKey(
+        'users.CustomUser', on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='moderated_sessions'
+    )
+    
+    presentations = models.ManyToManyField(
+        PresentationRequest,
+        related_name='sessions',
+        blank=True,
+        help_text="Presentations grouped into this session"
+    )
+    
+    # Session examiners (shared across all presentations in the session)
+    examiners = models.ManyToManyField(
+        'users.CustomUser',
+        related_name='session_examinations',
+        blank=True,
+        help_text="Examiners for this session (must not be supervisors of any presenter)"
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'presentation_sessions'
+        ordering = ['-scheduled_date']
+    
+    def __str__(self):
+        return self.name or f"Session on {self.scheduled_date}"
+    
+    def get_all_supervisors(self):
+        """Return all supervisors across all presentations in this session"""
+        from django.db.models import Q
+        supervisor_ids = set()
+        for p in self.presentations.all():
+            supervisor_ids.update(p.supervisors.values_list('id', flat=True))
+        return supervisor_ids
+    
+    def validate_examiners(self, examiner_ids):
+        """
+        Validate that no examiner is also a supervisor of any student in this session.
+        Returns a list of conflict descriptions or an empty list if valid.
+        """
+        conflicts = []
+        for p in self.presentations.all():
+            student_supervisors = set(p.supervisors.values_list('id', flat=True))
+            for eid in examiner_ids:
+                if eid in student_supervisors:
+                    from apps.users.models import CustomUser
+                    examiner = CustomUser.objects.get(id=eid)
+                    conflicts.append(
+                        f'{examiner.get_full_name_with_title()} is a supervisor of {p.student.get_full_name()} '
+                        f'(presenting in this session).'
+                    )
+        return conflicts
+
+
 class PresentationAssignment(models.Model):
     """Assignments of coordinators and examiners to presentations"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
